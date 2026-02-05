@@ -7,7 +7,7 @@ from pathlib import Path
 import streamlit as st
 
 from src.config import GOOGLE_SHEET_ID, TPM_COL, TOOLS
-from src.data_processing import fetch_tpm_ids_from_tools
+from src.data_processing import fetch_tpm_ids
 
 
 # ============================================================
@@ -253,18 +253,18 @@ apply_global_background(
 
 
 # ============================================================
-# Cached loader (FAST) - collect TPM IDs across ALL tools
+# Cached loader (FAST) — SAME LOGIC: ids depend on selected Tool(tab)
 # ============================================================
 @st.cache_data(ttl=600, show_spinner=False)
-def load_all_tpm_ids_cached(sheet_id: str, tools: list[str], tpm_col: str) -> list[str]:
-    ids = fetch_tpm_ids_from_tools(sheet_id, tools, tpm_col=tpm_col, header_row=1)
-    # normalize
-    return [str(x).strip() for x in ids if str(x).strip()]
+def load_tpm_ids_cached(sheet_id: str, tool_name: str, tpm_col: str) -> list[str]:
+    # ✅ Same logic: TPMs only for selected worksheet_name (= tool_name)
+    return fetch_tpm_ids(sheet_id, tool_name, tpm_col=tpm_col, header_row=1)
 
 
-def _safe_load_all_tpm_ids() -> tuple[list[str], str | None]:
+def _safe_load_tpm_ids(tool_name: str) -> tuple[list[str], str | None]:
     try:
-        ids = load_all_tpm_ids_cached(GOOGLE_SHEET_ID, TOOLS, TPM_COL)
+        ids = load_tpm_ids_cached(GOOGLE_SHEET_ID, tool_name, TPM_COL)
+        ids = [str(x).strip() for x in ids if str(x).strip()]
         return ids, None
     except Exception:
         return [], "Failed to load TPM list. Please check Google Sheets access and configuration."
@@ -328,7 +328,7 @@ selected_tool = st.selectbox(
 )
 
 with st.spinner("Loading TPM list..."):
-    tpm_ids, load_error = _safe_load_all_tpm_ids()
+    tpm_ids, load_error = _safe_load_tpm_ids(selected_tool)
 
 options = [""] + tpm_ids
 if st.session_state["tpm_id"] not in options:
@@ -355,6 +355,7 @@ st.caption("Tip: choose TPM ID first, then continue.")
 # Navigation
 # ============================================================
 if login_clicked:
+    # Lock TPM for tool pages
     st.session_state["_tpm_id_locked"] = selected_tpm_id
 
     page_file = _resolve_tool_page_file(selected_tool)
