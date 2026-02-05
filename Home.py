@@ -254,6 +254,52 @@ apply_global_background(
 
 
 # ============================================================
+# Optional: quick secrets sanity check (NO LOGIC CHANGE)
+# ============================================================
+def _secrets_hint_if_missing_or_blank() -> str | None:
+    """
+    Provide a helpful message if Streamlit secrets are missing/blank.
+    Does NOT enforce anything — only improves diagnostics.
+    """
+    try:
+        if not hasattr(st, "secrets"):
+            return "Streamlit secrets not available in this environment."
+
+        if "gcp_service_account" not in st.secrets and "GOOGLE_CREDENTIALS_JSON" not in st.secrets:
+            return (
+                "No Google credentials found in Streamlit Secrets.\n"
+                "Add either:\n"
+                "  - [gcp_service_account] ... (table)\n"
+                "  - GOOGLE_CREDENTIALS_JSON = \"\"\"{...}\"\"\" (JSON string)\n"
+            )
+
+        if "gcp_service_account" in st.secrets:
+            sa = dict(st.secrets["gcp_service_account"])
+            pk = (sa.get("private_key") or "").strip()
+            if not pk or pk in ('""', "''"):
+                return (
+                    "Streamlit Secrets found: [gcp_service_account] but private_key is EMPTY.\n"
+                    "Fix: paste the real private_key from the service account JSON.\n"
+                    "It must look like:\n"
+                    "private_key = \"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n\""
+                )
+
+        if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
+            raw = str(st.secrets["GOOGLE_CREDENTIALS_JSON"] or "").strip()
+            if not raw:
+                return (
+                    "Streamlit secret GOOGLE_CREDENTIALS_JSON exists but is EMPTY.\n"
+                    "Fix: paste the full JSON file content into that secret."
+                )
+
+    except Exception:
+        # keep UI stable; don't crash Home for a debug helper
+        return None
+
+    return None
+
+
+# ============================================================
 # Cached loader (FAST) — SAME LOGIC: ids depend on selected Tool(tab)
 # ============================================================
 @st.cache_data(ttl=600, show_spinner=False)
@@ -272,16 +318,36 @@ def _safe_load_tpm_ids(tool_name: str) -> tuple[list[str], str | None]:
         return [], f"Worksheet not found: '{tool_name}'. Please ensure TOOLS names match Sheet tab names exactly."
 
     except SpreadsheetNotFound:
+        hint = _secrets_hint_if_missing_or_blank()
+        extra = f"\n\nHint:\n{hint}" if hint else ""
         return [], (
-            "Spreadsheet not found or not shared with the service account.\n"
-            "Action: Share the Google Sheet with your service account email."
+            "Spreadsheet not found OR not shared with the service account.\n"
+            "Action:\n"
+            "  1) Share the Google Sheet with the service account email (client_email)\n"
+            "  2) Confirm the sheet ID is correct\n"
+            f"{extra}"
         )
 
     except APIError as e:
-        return [], f"Google API Error: {e}"
+        hint = _secrets_hint_if_missing_or_blank()
+        extra = f"\n\nHint:\n{hint}" if hint else ""
+        return [], f"Google API Error: {e}{extra}"
+
+    except FileNotFoundError as e:
+        # This is the exact issue you saw — show a clearer message for Cloud
+        hint = _secrets_hint_if_missing_or_blank()
+        extra = f"\n\nHint:\n{hint}" if hint else ""
+        return [], (
+            f"{type(e).__name__}: {e}\n\n"
+            "You are using Streamlit Cloud, so you should NOT rely on local credentials.json.\n"
+            "Fix: configure Streamlit Secrets with your Google service account JSON.\n"
+            f"{extra}"
+        )
 
     except Exception as e:
-        return [], f"Unexpected error: {type(e).__name__}: {e}"
+        hint = _secrets_hint_if_missing_or_blank()
+        extra = f"\n\nHint:\n{hint}" if hint else ""
+        return [], f"Unexpected error: {type(e).__name__}: {e}{extra}"
 
 
 # ============================================================
