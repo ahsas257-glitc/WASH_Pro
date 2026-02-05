@@ -15,15 +15,17 @@ SCOPES = [
 ]
 
 
+# -----------------------------
+# Local helper (only for dev)
+# -----------------------------
 def _project_root() -> str:
-    """Project root = one level above /src."""
     return os.path.dirname(os.path.dirname(__file__))
 
 
 def get_local_credentials_path() -> str:
     """
-    Local development only:
-    Put credentials.json in one of:
+    Local development only.
+    Put credentials.json in:
       - <project_root>/code/credentials.json
       - <project_root>/credentials.json
     """
@@ -43,83 +45,144 @@ def get_local_credentials_path() -> str:
     )
 
 
-def _fix_private_key_newlines(sa_info: Dict[str, Any]) -> Dict[str, Any]:
+# -----------------------------
+# Secrets parsing helpers
+# -----------------------------
+def _fix_private_key(sa_info: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Streamlit secrets sometimes store private_key with real newlines or with '\\n'.
-    Google expects actual newlines in the PEM block.
+    Ensure private_key contains REAL newlines.
+    Accepts both '\\n' and real '\n'.
     """
     info = dict(sa_info)
     pk = info.get("private_key")
     if isinstance(pk, str):
-        # If it's a JSON string with literal \n, json.loads already converts it to real newlines.
-        # But if user pasted it into TOML without escaping, it may contain actual newlines.
-        # Also sometimes it contains '\\n' - convert those to '\n'.
         info["private_key"] = pk.replace("\\n", "\n")
     return info
 
 
-def _load_service_account_from_streamlit_secrets() -> Optional[Dict[str, Any]]:
+def _validate_service_account_dict(sa_info: Dict[str, Any]) -> None:
     """
-    Load service account credentials from Streamlit secrets if available.
+    Validate required fields exist. Raise ValueError with clear message if not.
+    """
+    required = ["type", "project_id", "private_key", "client_email", "token_uri"]
+    missing = [k for k in required if not sa_info.get(k)]
+    if missing:
+        raise ValueError(
+            f"Service account info missing required keys: {missing}. "
+            "Check your Streamlit Secrets. "
+            "Recommended secret format: [gcp_service_account] table or GOOGLE_CREDENTIALS_JSON string."
+        )
 
+
+def _load_from_env() -> Optional[Dict[str, Any]]:
+    """
+    Optional: allow credentials via env var (useful in some deployments).
+    Supported env vars:
+      - GOOGLE_CREDENTIALS_JSON
+      - GCP_SERVICE_ACCOUNT_JSON
+    """
+    raw = os.getenv("GOOGLE_CREDENTIALS_JSON") or os.getenv("GCP_SERVICE_ACCOUNT_JSON")
+    if not raw:
+        return None
+    try:
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("Env GOOGLE_CREDENTIALS_JSON must be a JSON object (dict).")
+        data = _fix_private_key(data)
+        _validate_service_account_dict(data)
+        return data
+    except Exception as e:
+        raise ValueError(
+            "Environment credentials JSON exists but is invalid. "
+            "Ensure it is valid JSON and private_key contains \\n escapes."
+        ) from e
+
+
+def _load_from_streamlit_secrets() -> Optional[Dict[str, Any]]:
+    """
+    Load service account credentials from Streamlit secrets.
     Supports:
-      1) GOOGLE_CREDENTIALS_JSON = "{...json...}"  (string)
-      2) [gcp_service_account] ... key/value pairs (table)
-      3) [google_service_account] ... key/value pairs (table)
+      1) GOOGLE_CREDENTIALS_JSON = """{...json...}"""
+      2) [gcp_service_account] ... key/value pairs
+      3) [google_service_account] ... key/value pairs
     """
     try:
-        import streamlit as st  # lazy import
+        import streamlit as st
     except Exception:
         return None
 
     if not hasattr(st, "secrets"):
         return None
 
-    # 1) JSON string style (recommended)
+    # 1) JSON string style
     if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
         raw = st.secrets["GOOGLE_CREDENTIALS_JSON"]
-        if not isinstance(raw, str):
-            # Streamlit may return a Secrets object; enforce str
-            raw = str(raw)
-
+        raw = raw if isinstance(raw, str) else str(raw)
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as e:
             raise ValueError(
-                "Streamlit secret GOOGLE_CREDENTIALS_JSON exists but is not valid JSON.\n"
-                "Common cause: private_key line breaks were pasted incorrectly.\n"
-                "Fix: keep the JSON exactly as downloaded from Google, and ensure private_key uses \\n inside the string."
+                "Streamlit secret GOOGLE_CREDENTIALS_JSON is not valid JSON.\n"
+                "Most common cause: private_key was pasted with real newlines.\n"
+                "Fix: paste the original JSON file exactly, where private_key contains \\n."
             ) from e
 
         if not isinstance(data, dict):
             raise ValueError("GOOGLE_CREDENTIALS_JSON must decode to a JSON object (dict).")
 
-        return _fix_private_key_newlines(data)
+        data = _fix_private_key(data)
+        _validate_service_account_dict(data)
+        return data
 
     # 2/3) Table style
     for table_key in ("gcp_service_account", "google_service_account"):
         if table_key in st.secrets:
-            table = dict(st.secrets[table_key])
-            return _fix_private_key_newlines(table)
+            data = dict(st.secrets[table_key])
+            data = _fix_private_key(data)
+            _validate_service_account_dict(data)
+            return data
 
     return None
 
 
+def _load_service_account() -> Optional[Dict[str, Any]]:
+    """
+    Load credentials from:
+      1) Streamlit Secrets
+      2) Environment variables (optional)
+    """
+    sa = _load_from_streamlit_secrets()
+    if sa:
+        return sa
+
+    sa = _load_from_env()
+    if sa:
+        return sa
+
+    return None
+
+
+# -----------------------------
+# Public API
+# -----------------------------
 def get_gspread_client(credentials_path: Optional[str] = None) -> gspread.Client:
     """
     Return an authorized gspread client.
 
     Priority:
-      1) Streamlit secrets (Cloud)
-      2) Local credentials.json file
+      1) Streamlit Secrets / Env (Cloud)
+      2) Local credentials.json (dev only)
+
+    IMPORTANT:
+      - If you are using Streamlit Cloud, you should configure secrets.
+      - If secrets exist but are invalid, we raise a clear error (do not fall back to local).
     """
-    # 1) Cloud secrets
-    sa_info = _load_service_account_from_streamlit_secrets()
+    sa_info = _load_service_account()
     if sa_info:
         creds = Credentials.from_service_account_info(sa_info, scopes=SCOPES)
         return gspread.authorize(creds)
 
-    # 2) Local file
+    # No secrets/env found -> local fallback (dev)
     if credentials_path is None:
         credentials_path = get_local_credentials_path()
 
