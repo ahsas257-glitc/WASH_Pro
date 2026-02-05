@@ -2,10 +2,10 @@
 from __future__ import annotations
 
 import time
-from typing import Any, Dict, List, Optional, Tuple, Set
+from typing import Any, Dict, List, Optional, Tuple
 
 import gspread
-from gspread.exceptions import APIError, WorksheetNotFound, SpreadsheetNotFound
+from gspread.exceptions import APIError
 
 from src.auth import get_gspread_client
 
@@ -50,43 +50,6 @@ def _col_to_a1(col_idx_1based: int) -> str:
     return "".join(reversed(letters))
 
 
-def _open_spreadsheet_with_retry(
-    sheet_id: str,
-    *,
-    retries: int = 4,
-    base_wait: float = 1.5,
-):
-    """Internal: open spreadsheet with retry/backoff."""
-    gc = get_gspread_client()
-
-    last_err: Optional[Exception] = None
-    for attempt in range(retries):
-        try:
-            return gc.open_by_key(sheet_id)
-
-        except APIError as e:
-            last_err = e
-            if _is_retryable_api_error(e) and attempt < retries - 1:
-                _sleep_with_backoff(attempt, base_wait)
-                continue
-            raise
-
-        except SpreadsheetNotFound as e:
-            # Not retryable; usually access/ID problem
-            raise
-
-        except Exception as e:
-            last_err = e
-            if _is_retryable_api_error(e) and attempt < retries - 1:
-                _sleep_with_backoff(attempt, base_wait)
-                continue
-            raise
-
-    if last_err:
-        raise last_err
-    raise RuntimeError("Failed to open spreadsheet for unknown reasons.")
-
-
 def _open_worksheet_with_retry(
     sheet_id: str,
     worksheet_name: str,
@@ -94,12 +57,13 @@ def _open_worksheet_with_retry(
     retries: int = 4,
     base_wait: float = 1.5,
 ) -> gspread.Worksheet:
-    """Internal: open worksheet with retry/backoff (opens spreadsheet each time)."""
-    sh = _open_spreadsheet_with_retry(sheet_id, retries=retries, base_wait=base_wait)
+    """Internal: open worksheet with retry/backoff."""
+    gc = get_gspread_client()
 
     last_err: Optional[Exception] = None
     for attempt in range(retries):
         try:
+            sh = gc.open_by_key(sheet_id)
             return sh.worksheet(worksheet_name)
 
         except APIError as e:
@@ -107,9 +71,6 @@ def _open_worksheet_with_retry(
             if _is_retryable_api_error(e) and attempt < retries - 1:
                 _sleep_with_backoff(attempt, base_wait)
                 continue
-            raise
-
-        except WorksheetNotFound:
             raise
 
         except Exception as e:
@@ -233,7 +194,7 @@ def find_by_tpm_id(
 
 
 # -----------------------------------------
-# Fast row fetch (no get_all_records)
+# NEW: Fast row fetch (no get_all_records)
 # -----------------------------------------
 def get_row_by_tpm_id(
     ws: gspread.Worksheet,
@@ -316,7 +277,9 @@ def fetch_row_by_tpm_id(
     row_retries: int = 3,
     row_base_wait: float = 1.2,
 ) -> Optional[Dict[str, Any]]:
-    """Convenience: open worksheet + fetch a single TPM row (fast)."""
+    """
+    Convenience: open worksheet + fetch a single TPM row (fast).
+    """
     ws = _open_worksheet_with_retry(sheet_id, worksheet_name, retries=ws_retries, base_wait=ws_base_wait)
     return get_row_by_tpm_id(
         ws,
@@ -329,7 +292,7 @@ def fetch_row_by_tpm_id(
 
 
 # -----------------------------------------
-# Fast TPM list for dropdown (single sheet)
+# NEW: Fast TPM list for dropdown (only TPM column)
 # -----------------------------------------
 def list_tpm_ids_fast(
     ws: gspread.Worksheet,
@@ -344,6 +307,8 @@ def list_tpm_ids_fast(
     Reads only:
       - header row
       - TPM column values
+
+    Perfect for dropdowns on large sheets.
     """
     last_err: Optional[Exception] = None
     for attempt in range(retries):
@@ -389,7 +354,10 @@ def fetch_tpm_ids(
     list_retries: int = 3,
     list_base_wait: float = 1.2,
 ) -> List[str]:
-    """Convenience: open worksheet + fetch TPM id list fast (single tab)."""
+    """
+    Convenience: open worksheet + fetch TPM id list fast.
+    Use for dropdowns.
+    """
     ws = _open_worksheet_with_retry(sheet_id, worksheet_name, retries=ws_retries, base_wait=ws_base_wait)
     return list_tpm_ids_fast(
         ws,
@@ -401,130 +369,12 @@ def fetch_tpm_ids(
 
 
 # -----------------------------------------
-# NEW: Fast TPM list across multiple tabs (Tool 1..Tool 12)
-# -----------------------------------------
-def fetch_tpm_ids_from_tools(
-    sheet_id: str,
-    tool_tabs: List[str],
-    *,
-    tpm_col: str = "TPM_ID",
-    header_row: int = 1,
-    ws_retries: int = 4,
-    ws_base_wait: float = 1.5,
-    list_retries: int = 3,
-    list_base_wait: float = 1.2,
-    skip_missing_tabs: bool = True,
-) -> List[str]:
-    """
-    Collect TPM IDs across multiple worksheet tabs (e.g. Tool 1..Tool 12).
-
-    - Opens spreadsheet once (faster)
-    - For each tab:
-        - opens worksheet by name
-        - reads header row + TPM column values only
-        - normalizes ids
-    - Returns unique, sorted TPM IDs across all tabs
-    """
-    sh = _open_spreadsheet_with_retry(sheet_id, retries=ws_retries, base_wait=ws_base_wait)
-
-    all_ids: Set[str] = set()
-
-    for tab_name in tool_tabs:
-        try:
-            ws = sh.worksheet(tab_name)
-        except WorksheetNotFound:
-            if skip_missing_tabs:
-                continue
-            raise
-
-        last_err: Optional[Exception] = None
-        for attempt in range(list_retries):
-            try:
-                headers = _fetch_headers(ws, header_row=header_row)
-                if not headers:
-                    break
-
-                col_idx = _find_col_index(headers, tpm_col)
-                if col_idx is None:
-                    break
-
-                values = ws.col_values(col_idx)
-                ids = _normalize_ids(values, header_row=header_row)
-                all_ids.update(ids)
-                break
-
-            except APIError as e:
-                last_err = e
-                if _is_retryable_api_error(e) and attempt < list_retries - 1:
-                    _sleep_with_backoff(attempt, list_base_wait)
-                    continue
-                raise
-
-            except Exception as e:
-                last_err = e
-                if _is_retryable_api_error(e) and attempt < list_retries - 1:
-                    _sleep_with_backoff(attempt, list_base_wait)
-                    continue
-                raise
-
-        # If you want to skip tabs that keep failing after retries, you can just continue.
-        # Currently: we continue anyway; errors would have been raised above if non-retryable.
-        _ = last_err
-
-    return sorted(all_ids)
-
-
-def fetch_row_by_tpm_id_across_tools(
-    sheet_id: str,
-    tool_tabs: List[str],
-    *,
-    tpm_id: str,
-    tpm_col: str = "TPM_ID",
-    header_row: int = 1,
-    ws_retries: int = 4,
-    ws_base_wait: float = 1.5,
-    row_retries: int = 3,
-    row_base_wait: float = 1.2,
-    skip_missing_tabs: bool = True,
-) -> Optional[Dict[str, Any]]:
-    """
-    Search a TPM_ID across multiple tabs and return the first matching row dict.
-    Adds '_source_tab' to the returned dict for debugging.
-    """
-    sh = _open_spreadsheet_with_retry(sheet_id, retries=ws_retries, base_wait=ws_base_wait)
-
-    target = str(tpm_id).strip()
-    if not target:
-        return None
-
-    for tab_name in tool_tabs:
-        try:
-            ws = sh.worksheet(tab_name)
-        except WorksheetNotFound:
-            if skip_missing_tabs:
-                continue
-            raise
-
-        row = get_row_by_tpm_id(
-            ws,
-            tpm_id=target,
-            tpm_col=tpm_col,
-            header_row=header_row,
-            retries=row_retries,
-            base_wait=row_base_wait,
-        )
-        if row:
-            row["_source_tab"] = tab_name
-            return row
-
-    return None
-
-
-# -----------------------------------------
 # Streamlit-friendly caching hooks
 # -----------------------------------------
 def get_worksheet_cached(sheet_id: str, worksheet_name: str):
-    """OPTIONAL helper: for Streamlit use with st.cache_resource."""
+    """
+    OPTIONAL helper: for Streamlit use with st.cache_resource.
+    """
     return open_worksheet(sheet_id, worksheet_name)
 
 
@@ -536,7 +386,9 @@ def get_row_cached(
     tpm_col: str = "TPM_ID",
     header_row: int = 1,
 ):
-    """OPTIONAL helper: for Streamlit use with st.cache_data (per worksheet + TPM)."""
+    """
+    OPTIONAL helper: for Streamlit use with st.cache_data (per worksheet + TPM).
+    """
     return fetch_row_by_tpm_id(
         sheet_id,
         worksheet_name,
@@ -553,7 +405,9 @@ def get_tpm_ids_cached(
     tpm_col: str = "TPM_ID",
     header_row: int = 1,
 ):
-    """OPTIONAL helper: for Streamlit use with st.cache_data (per worksheet)."""
+    """
+    OPTIONAL helper: for Streamlit use with st.cache_data (per worksheet).
+    """
     return fetch_tpm_ids(
         sheet_id,
         worksheet_name,
