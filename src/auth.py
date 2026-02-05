@@ -1,7 +1,6 @@
 # src/auth.py
 from __future__ import annotations
 
-import json
 import os
 from typing import Optional, Dict, Any
 
@@ -16,17 +15,15 @@ SCOPES = [
 
 
 def _project_root() -> str:
-    """Project root = one level above /src."""
     return os.path.dirname(os.path.dirname(__file__))
 
 
 def get_local_credentials_path() -> str:
     """
-    Local development only:
-
-    Put credentials.json in one of:
-      - <project_root>/code/credentials.json
-      - <project_root>/credentials.json
+    Local development:
+      Put your credentials.json in one of:
+        - <project_root>/code/credentials.json
+        - <project_root>/credentials.json
     """
     root = _project_root()
     candidates = [
@@ -38,19 +35,18 @@ def get_local_credentials_path() -> str:
             return p
 
     raise FileNotFoundError(
-        "credentials.json not found for local dev. "
-        "Add it locally (do NOT commit to GitHub) or configure Streamlit Secrets on Cloud."
+        "credentials.json not found. Add it locally (DO NOT push to GitHub) "
+        "or configure Streamlit Cloud secrets under [gcp_service_account]."
     )
 
 
 def _load_service_account_from_streamlit_secrets() -> Optional[Dict[str, Any]]:
     """
-    Load service-account credentials from Streamlit Secrets (Cloud).
-
-    Supported secret formats:
-      1) Key GOOGLE_CREDENTIALS_JSON containing a JSON string (recommended)
-      2) Table [gcp_service_account] as key/value pairs (older style)
-      3) Table [google_service_account] as key/value pairs (alternative style)
+    Streamlit Cloud:
+      Read service account from Secrets table:
+        [gcp_service_account]
+        ...
+    This format supports real newlines in private_key and is the safest.
     """
     try:
         import streamlit as st  # lazy import
@@ -60,35 +56,23 @@ def _load_service_account_from_streamlit_secrets() -> Optional[Dict[str, Any]]:
     if not hasattr(st, "secrets"):
         return None
 
-    # 1) Recommended: JSON string stored under GOOGLE_CREDENTIALS_JSON
-    if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
-        raw = st.secrets["GOOGLE_CREDENTIALS_JSON"]
-        try:
-            return json.loads(raw)
-        except Exception as e:
-            raise ValueError(
-                "Streamlit secret GOOGLE_CREDENTIALS_JSON exists but is not valid JSON. "
-                "Re-check you pasted valid JSON and kept \\n inside private_key."
-            ) from e
+    if "gcp_service_account" in st.secrets:
+        return dict(st.secrets["gcp_service_account"])
 
-    # 2/3) TOML table style
-    for table_key in ("gcp_service_account", "google_service_account"):
-        if table_key in st.secrets:
-            try:
-                return dict(st.secrets[table_key])
-            except Exception as e:
-                raise ValueError(f"Streamlit secrets table '{table_key}' is not a valid mapping.") from e
+    # (Optional) allow alternative name if you ever use it
+    if "google_service_account" in st.secrets:
+        return dict(st.secrets["google_service_account"])
 
     return None
 
 
 def get_gspread_client(credentials_path: Optional[str] = None) -> gspread.Client:
     """
-    Return an authorized gspread client.
+    Returns an authorized gspread client.
 
     Priority:
-      - Streamlit Cloud: use Streamlit Secrets
-      - Local: use credentials.json from disk
+      1) Streamlit Cloud Secrets: [gcp_service_account]
+      2) Local credentials.json file (for local dev only)
     """
     sa_info = _load_service_account_from_streamlit_secrets()
     if sa_info:
