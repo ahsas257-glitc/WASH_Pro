@@ -5,7 +5,6 @@ import tempfile
 import hashlib
 from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple, Callable
-from urllib.parse import urlparse
 
 import streamlit as st
 from PIL import Image
@@ -59,7 +58,6 @@ def _s(v: Any) -> str:
 
 
 def _k(*parts: Any) -> str:
-    # short, stable
     raw = ".".join(str(p) for p in parts)
     h = hashlib.md5(raw.encode("utf-8")).hexdigest()[:10]
     return f"t6.s3.{h}"
@@ -97,9 +95,10 @@ def _ensure_obs_schema(it: Dict[str, Any]) -> Dict[str, Any]:
     it.setdefault("title_mode", "Select")
     it.setdefault("title_selected", "")
     it.setdefault("title_custom", "")
-    it.setdefault("text", "")
     it.setdefault("audio_url", "")
-    it.setdefault("photos", [])
+    # ✅ removed "text" (overall)
+    # ✅ each photo will carry its own text
+    it.setdefault("photos", [])  # list[{"url":..., "text":...}]
     return it
 
 
@@ -118,12 +117,15 @@ def _numbered_title(section_no: str, global_idx_1based: int, raw_title: str) -> 
 
 
 def _normalize_photos(selected_urls: List[str], old_photos: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """
+    Preserve per-photo text across selection changes.
+    """
     old_map = {
-        _s(p.get("url")): _s(p.get("note"))
+        _s(p.get("url")): _s(p.get("text"))
         for p in (old_photos or [])
         if isinstance(p, dict) and _s(p.get("url"))
     }
-    return [{"url": u, "note": old_map.get(u, "")} for u in selected_urls]
+    return [{"url": u, "text": old_map.get(u, "")} for u in selected_urls]
 
 
 # =============================================================================
@@ -230,6 +232,9 @@ def _build_valid_observations_global(
     start_index_1based: int,
     photo_bytes_cache: Dict[str, bytes],
 ) -> Tuple[List[Dict[str, Any]], int]:
+    """
+    ✅ Each observation: title + audio + photos (each photo has its own text)
+    """
     valid: List[Dict[str, Any]] = []
     global_idx = int(start_index_1based)
 
@@ -253,7 +258,7 @@ def _build_valid_observations_global(
                 photos_fixed.append(
                     {
                         "url": u,
-                        "note": _s(p.get("note")),
+                        "text": _s(p.get("text")),
                         "bytes": photo_bytes_cache.get(u),
                     }
                 )
@@ -261,7 +266,6 @@ def _build_valid_observations_global(
         valid.append(
             {
                 "title": title_num,
-                "text": _s(it.get("text")),
                 "audio_url": _s(it.get("audio_url")),
                 "photos": photos_fixed,
             }
@@ -430,6 +434,10 @@ def _build_observations_preview_docx_bytes(
 
     doc.add_paragraph("")
 
+    # ✅ Equal split: 50/50
+    LEFT_W = Inches(3.25)
+    RIGHT_W = Inches(3.25)
+
     for comp in (comps or [])[:4]:
         if not isinstance(comp, dict):
             continue
@@ -452,7 +460,6 @@ def _build_observations_preview_docx_bytes(
                 continue
 
             t = _s(it.get("title"))
-            txt = _s(it.get("text"))
             photos = it.get("photos") or []
 
             th = doc.add_paragraph(t)
@@ -462,40 +469,59 @@ def _build_observations_preview_docx_bytes(
                 pass
             _set_para_compact(th)
 
-            tbl = doc.add_table(rows=1, cols=2)
-            tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
-            _remove_table_borders(tbl)
-
-            left = tbl.rows[0].cells[0]
-            right = tbl.rows[0].cells[1]
-            left.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-            right.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-
-            _set_cell_margins(left, start=60, end=160)
-            _set_cell_margins(right, start=160, end=60)
-
-            p1 = left.paragraphs[0]
-            p1.text = txt
-            p1.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            _set_para_compact(p1)
-
-            right.paragraphs[0].text = ""
-            _set_para_compact(right.paragraphs[0])
-
+            # ✅ For each photo: a 2-col borderless table (left text, right image)
             ph_list = [p for p in (photos or []) if isinstance(p, dict) and _s(p.get("url"))]
-            if ph_list:
-                first = ph_list[0]
-                u = _s(first.get("url"))
-                b = first.get("bytes") or photo_bytes_cache.get(u)
+            if not ph_list:
+                doc.add_paragraph("")  # spacing
+                continue
+
+            for one in ph_list[:6]:
+                u = _s(one.get("url"))
+                txt = _s(one.get("text"))
+                b = one.get("bytes") or photo_bytes_cache.get(u)
+
+                tbl = doc.add_table(rows=1, cols=2)
+                tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+                _remove_table_borders(tbl)
+
+                left = tbl.rows[0].cells[0]
+                right = tbl.rows[0].cells[1]
+                left.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+                right.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+
+                # equal widths
+                try:
+                    left.width = LEFT_W
+                    right.width = RIGHT_W
+                except Exception:
+                    pass
+
+                _set_cell_margins(left, start=80, end=120)
+                _set_cell_margins(right, start=120, end=80)
+
+                # LEFT: text (NOT justified)
+                p1 = left.paragraphs[0]
+                p1.text = txt
+                p1.alignment = WD_ALIGN_PARAGRAPH.LEFT  # ✅ no justify
+                _set_para_compact(p1)
+
+                # RIGHT: image
+                right.paragraphs[0].text = ""
+                _set_para_compact(right.paragraphs[0])
+
                 if b:
                     clean = _to_clean_png_fit_box(b, target_aspect=PHOTO_ASPECT)
                     if clean:
                         pic_p = right.add_paragraph()
                         pic_p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
                         _set_para_compact(pic_p)
-                        pic_p.add_run().add_picture(BytesIO(clean), width=Inches(PHOTO_W_IN), height=Inches(PHOTO_H_IN))
+                        pic_p.add_run().add_picture(
+                            BytesIO(clean),
+                            width=Inches(PHOTO_W_IN),
+                            height=Inches(PHOTO_H_IN),
+                        )
 
-            doc.add_paragraph("")
+                doc.add_paragraph("")  # spacing between photo blocks
 
     buf = BytesIO()
     doc.save(buf)
@@ -521,8 +547,7 @@ def _get_or_build_obs_preview_docx(
                 "ov": [
                     {
                         "title": _s(o.get("title")),
-                        "text": _s(o.get("text")),
-                        "photos": [(_s(p.get("url")), _s(p.get("note"))) for p in (o.get("photos") or [])],
+                        "photos": [(_s(p.get("url")), _s(p.get("text"))) for p in (o.get("photos") or [])],
                     }
                     for o in ov
                     if isinstance(o, dict)
@@ -584,7 +609,7 @@ def render_step(
 ) -> bool:
     _ensure_state()
 
-    st.subheader("Step 3 — Observations (Audio + Photos + Notes)")
+    st.subheader("Step 3 — Observations (Audio + Photos + Photo-wise Text)")
 
     urls = getattr(ctx, "all_photo_urls", []) or []
     labels = getattr(ctx, "photo_label_by_url", {}) or {}
@@ -604,7 +629,7 @@ def render_step(
         card_open(
             "Observations",
             subtitle=(
-                "Select/write a title, choose photos, and write a note for each photo. "
+                "Select/write a title, choose photos, then write a text for EACH photo. "
                 "Only observations with a title will be included in the report."
             ),
             variant="lg-variant-green",
@@ -768,15 +793,7 @@ def render_step(
 
                         title_final = _obs_title_raw(it)
 
-                        it["text"] = st.text_area(
-                            "Observation text (overall)",
-                            value=_s(it.get("text")),
-                            height=110,
-                            key=_k("obs_text", ci, oi),
-                            placeholder="Write the overall observation details here...",
-                        )
-
-                        # Photos + notes
+                        # Photos + per-photo text
                         if not urls:
                             st.info("No photo URLs are available for this record.")
                             it["photos"] = []
@@ -802,7 +819,7 @@ def render_step(
                             it["photos"] = _normalize_photos(selected_urls, it.get("photos") or [])
 
                             if it["photos"]:
-                                st.markdown("**Photo notes (one note per photo)**")
+                                st.markdown("**Photo-wise observation text (one text per photo)**")
                                 for pj, ph in enumerate(it["photos"]):
                                     u = _s(ph.get("url"))
                                     colA, colB = st.columns([1, 2], gap="small")
@@ -815,12 +832,12 @@ def render_step(
                                             else:
                                                 st.caption("Image bytes are not available.")
                                     with colB:
-                                        ph["note"] = st.text_area(
-                                            "Note",
-                                            value=_s(ph.get("note")),
-                                            height=70,
-                                            key=_k("photo_note", ci, oi, pj),
-                                            placeholder="Write a short note for this photo (will appear in the report).",
+                                        ph["text"] = st.text_area(
+                                            "Observation for this photo",
+                                            value=_s(ph.get("text")),
+                                            height=90,
+                                            key=_k("photo_text", ci, oi, pj),
+                                            placeholder="Write the observation text for this photo (will appear in the table).",
                                         )
 
                         observations[oi] = it
