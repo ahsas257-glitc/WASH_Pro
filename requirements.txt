@@ -5,4 +5,4 @@ google-auth
 python-docx
 pymupdf
 pillow
-
+streamlit-js-eval
