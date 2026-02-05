@@ -3,7 +3,6 @@ pandas
 gspread
 google-auth
 python-docx
-pywin32
 pymupdf
 pillow
 
