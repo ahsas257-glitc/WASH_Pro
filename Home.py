@@ -5,6 +5,7 @@ import re
 from pathlib import Path
 
 import streamlit as st
+from gspread.exceptions import WorksheetNotFound, SpreadsheetNotFound, APIError
 
 from src.config import GOOGLE_SHEET_ID, TPM_COL, TOOLS
 from src.data_processing import fetch_tpm_ids
@@ -266,8 +267,21 @@ def _safe_load_tpm_ids(tool_name: str) -> tuple[list[str], str | None]:
         ids = load_tpm_ids_cached(GOOGLE_SHEET_ID, tool_name, TPM_COL)
         ids = [str(x).strip() for x in ids if str(x).strip()]
         return ids, None
-    except Exception:
-        return [], "Failed to load TPM list. Please check Google Sheets access and configuration."
+
+    except WorksheetNotFound:
+        return [], f"Worksheet not found: '{tool_name}'. Please ensure TOOLS names match Sheet tab names exactly."
+
+    except SpreadsheetNotFound:
+        return [], (
+            "Spreadsheet not found or not shared with the service account.\n"
+            "Action: Share the Google Sheet with your service account email."
+        )
+
+    except APIError as e:
+        return [], f"Google API Error: {e}"
+
+    except Exception as e:
+        return [], f"Unexpected error: {type(e).__name__}: {e}"
 
 
 # ============================================================
