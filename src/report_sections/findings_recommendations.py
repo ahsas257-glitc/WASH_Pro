@@ -159,7 +159,7 @@ def add_findings_recommendations_page(
                 tbl.style = "Table Grid"
 
                 _set_table_fixed_layout(tbl)
-                _set_table_black_borders(tbl, size="8")  # ✅ black borders
+                _set_table_black_borders(tbl, size="5")  # ✅ black borders
 
                 # Set exact widths
                 for i, w in enumerate([COL_NO, COL_FIND, COL_COMP, COL_PHOTO]):
@@ -238,3 +238,4 @@ def add_findings_recommendations_page(
 
             # ✅ optional spacer after each observation block (keeps sections readable)
             _one_line_gap(doc)
+
