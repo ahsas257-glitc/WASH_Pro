@@ -1,15 +1,24 @@
-# pages/Tool_7.py
 from __future__ import annotations
 
 import os
 import re
 from io import BytesIO
+from pathlib import Path
 from typing import Optional, Dict, Tuple, List
 from urllib.parse import urlparse
 
-import streamlit as st
 import requests
+import streamlit as st
 from PIL import Image
+
+# ============================================================
+# Page config (MUST BE FIRST Streamlit call)
+# ============================================================
+st.set_page_config(page_title="Tool 7 — WASH Report Generator", layout="wide")
+
+# Robust project root: /pages/Tool_7.py -> project root is parents[1]
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+project_root = str(PROJECT_ROOT)
 
 # ============================================================
 # Internal project imports (DO NOT REMOVE)
@@ -26,16 +35,14 @@ from src.integrations.surveycto_client import (
 
 # ✅ single source of design
 from design.components.base_tool_ui import (
-    inject_base_tool_design,
-    BaseToolDesignConfig,
+    apply_global_background,
     topbar,
     status_card,
 )
 
-# ✅ Tool 7 modules (NEW PATH: src/Tools)
+# ✅ Tool 7 modules (your structure)
 from src.Tools.utils.state import init_tool6_state
 from src.Tools.utils.types import Tool6Context
-
 from src.Tools.steps import (
     step_1_cover,
     step_2_general_info,
@@ -45,48 +52,52 @@ from src.Tools.steps import (
     step_7_data_collection_methods,
 )
 
-# Step 5
+# Optional steps
 try:
     from src.Tools.steps import step_5_work_progress
 except Exception:
     step_5_work_progress = None  # type: ignore
 
-# Step 8
 try:
     from src.Tools.steps import step_8_summary_of_findings as step_8_summary_ui
 except Exception:
     step_8_summary_ui = None  # type: ignore
 
-# Step 9
 try:
     from src.Tools.steps import step_9_conclusion as step_9_conclusion_ui
 except Exception:
     step_9_conclusion_ui = None  # type: ignore
 
-# Step 10
 try:
     from src.Tools.steps import step_10_generate_report
 except Exception:
     step_10_generate_report = None  # type: ignore
 
-
 # ============================================================
-# Page config (ONLY ONCE)
+# ✅ Apply GLOBAL Liquid-Glass background (Your design)
 # ============================================================
-st.set_page_config(page_title="Tool 7 — WASH Report Generator", layout="wide")
-
-# project root (stable)
-PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
-
-# ✅ Inject modern design ONCE
-inject_base_tool_design(
-    BaseToolDesignConfig(
-        project_root=PROJECT_ROOT,
-        background_image_rel="assets/images/Logo_of_PPC.png",
-        background_opacity_light=0.07,
-        background_opacity_dark=0.12,
-    )
+apply_global_background(
+    logo_path="assets/images/Logo_of_PPC.png",
+    logo_opacity_light=0.07,
+    logo_opacity_dark=0.12,
+    intensity=1.0,
 )
+
+# ============================================================
+# IMPORTANT: lock TPM ID before any state init resets it
+# ============================================================
+# Tool pages rely on Home storing this in session_state["tpm_id"]
+if "_tpm_id_locked" not in st.session_state:
+    st.session_state["_tpm_id_locked"] = st.session_state.get("tpm_id")
+
+# ============================================================
+# INIT STATE (may reset keys; we restore tpm_id after)
+# ============================================================
+init_tool6_state()
+
+# Restore TPM after init (critical fix for: "No TPM ID selected")
+if st.session_state.get("tpm_id") in (None, "", False):
+    st.session_state["tpm_id"] = st.session_state.get("_tpm_id_locked")
 
 # ============================================================
 # Optional: SurveyCTO SDK (kept optional)
@@ -97,7 +108,6 @@ try:
 except Exception:
     pysurveycto = None
     _HAS_PYSURVEYCTO = False
-
 
 # ============================================================
 # Google Sheet Column Mapping (KEEP AS IS)
@@ -203,28 +213,23 @@ def _url_to_scto_path(url: str) -> str:
     return path
 
 
-def _cache_user_key() -> str:
-    load_auth_state()
-    return (st.session_state.get("scto_username") or "").strip() or "anon"
-
-
-def get_scto_client(username: str, password: str):
+def get_scto_client():
     if not _HAS_PYSURVEYCTO:
         return None
-    if not username or not password:
+    load_auth_state()
+    user = st.session_state.get("scto_username", "").strip()
+    pwd = st.session_state.get("scto_password", "").strip()
+    if not user or not pwd:
         return None
     try:
-        return pysurveycto.SurveyCTOObject("act4performance", username, password)
+        return pysurveycto.SurveyCTOObject("act4performance", user, pwd)
     except Exception:
         return None
 
 
-# ============================================================
-# Cached media loaders (FAST + SAFE)
-# ============================================================
 @st.cache_data(show_spinner=False, ttl=3600)
-def scto_get_attachment_bytes(url: str, username: str, password: str) -> Optional[bytes]:
-    scto = get_scto_client(username, password)
+def scto_get_attachment_bytes(url: str, username: str) -> Optional[bytes]:
+    scto = get_scto_client()
     if scto is None:
         return None
     try:
@@ -246,33 +251,20 @@ def _scto_http_get(url: str, *, timeout: int) -> requests.Response:
 
 
 @st.cache_data(show_spinner=False, ttl=3600)
-def fetch_image_cached(
-    url: str,
-    username_key: str,
-    scto_username: str,
-    scto_password: str,
-) -> Tuple[bool, Optional[bytes], str]:
-    """
-    Cached image fetch:
-    - Supports SurveyCTO URLs (via SDK OR surveycto_request)
-    - Supports normal HTTP URLs
-    - Returns (ok, png_bytes, message)
-    """
+def fetch_image_cached(url: str, username: str) -> Tuple[bool, Optional[bytes], str]:
     try:
         if not url or not url.startswith("http"):
             return False, None, "Invalid URL"
 
         if _is_surveycto_url(url):
-            # A) SDK attachment (best)
             if _is_scto_view_attachment(url):
-                b = scto_get_attachment_bytes(url, scto_username, scto_password)
+                b = scto_get_attachment_bytes(url, username)
                 if b:
                     try:
                         return True, _to_clean_png_bytes(b), "OK"
                     except Exception:
                         return False, None, "Invalid/unsupported image data (SDK)"
 
-            # B) SurveyCTO auth request
             r = _scto_http_get(url, timeout=25)
             if r.status_code >= 400:
                 return False, None, f"HTTP {r.status_code}"
@@ -283,7 +275,6 @@ def fetch_image_cached(
             except Exception:
                 return False, None, "Invalid/unsupported image data"
 
-        # Normal HTTP
         r = _plain_http_get(url, timeout=25)
         if r.status_code >= 400:
             return False, None, f"HTTP {r.status_code}"
@@ -298,20 +289,17 @@ def fetch_image_cached(
         return False, None, str(e)
 
 
-def fetch_image(url: str) -> Tuple[bool, Optional[bytes], str]:
+def _cache_user_key() -> str:
     load_auth_state()
-    uname = (st.session_state.get("scto_username") or "").strip()
-    pwd = (st.session_state.get("scto_password") or "").strip()
-    return fetch_image_cached(
-        url=url,
-        username_key=_cache_user_key(),
-        scto_username=uname,
-        scto_password=pwd,
-    )
+    return (st.session_state.get("scto_username") or "").strip() or "anon"
+
+
+def fetch_image(url: str) -> Tuple[bool, Optional[bytes], str]:
+    return fetch_image_cached(url, username=_cache_user_key())
 
 
 # ============================================================
-# Wizard steps
+# Wizard steps (as your step modules expect)
 # ============================================================
 STEPS = [
     "1) Cover Photo",
@@ -326,12 +314,6 @@ STEPS = [
     "10) Generate Report",
 ]
 
-
-# ============================================================
-# INIT STATE
-# ============================================================
-init_tool6_state()
-
 wiz = Wizard(WizardConfig(tool_name="Tool 7", steps=STEPS, key_prefix="tool7"))
 
 topbar(
@@ -340,7 +322,8 @@ topbar(
     right_chip="WASH • UNICEF",
 )
 
-tool_name = "Tool 7"  # ✅ MUST stay exactly "Tool 7" for Google Sheet lookup
+# MUST stay exactly "Tool 7" for Google Sheet lookup
+tool_name = "Tool 7"
 tpm_id = st.session_state.get("tpm_id")
 
 if not tpm_id:
@@ -363,9 +346,8 @@ def _load_tool7_row(sheet_id: str, tool: str, tpm_value: str, tpm_col: str):
 
 row = _load_tool7_row(GOOGLE_SHEET_ID, tool_name, str(tpm_id), TPM_COL)
 if not row:
-    status_card("TPM not found", "The selected TPM ID was not found in the Tool 6 worksheet.", level="error")
+    status_card("TPM not found", "The selected TPM ID was not found in the Tool 7 worksheet.", level="error")
     st.stop()
-
 
 # ============================================================
 # Logos (safe paths)
@@ -374,10 +356,9 @@ def _safe_logo(path: str) -> Optional[str]:
     return path if path and os.path.exists(path) else None
 
 
-unicef_logo_path = _safe_logo(os.path.join(PROJECT_ROOT, "assets/images/Logo_of_UNICEF.png"))
-act_logo_path = _safe_logo(os.path.join(PROJECT_ROOT, "assets/images/Logo_of_ACT.png"))
-ppc_logo_path = _safe_logo(os.path.join(PROJECT_ROOT, "assets/images/Logo_of_PPC.png"))
-
+unicef_logo_path = _safe_logo(os.path.join(project_root, "assets/images/Logo_of_UNICEF.png"))
+act_logo_path = _safe_logo(os.path.join(project_root, "assets/images/Logo_of_ACT.png"))
+ppc_logo_path = _safe_logo(os.path.join(project_root, "assets/images/Logo_of_PPC.png"))
 
 # ============================================================
 # Defaults (from Google Sheet)
@@ -417,14 +398,12 @@ hints = {
     "Reason for delay": "If empty, DOCX shows N/A.",
 }
 
-# seed overrides once
 st.session_state.setdefault("general_info_overrides", {})
 if not st.session_state["general_info_overrides"]:
     st.session_state["general_info_overrides"] = {k: str(v) for k, v in defaults.items()}
 
-
 # ============================================================
-# Media links (photos)
+# Media links
 # ============================================================
 def normalize_media_url(url: str) -> str:
     u = (url or "").strip()
@@ -475,9 +454,8 @@ for i, p in enumerate(photos or [], start=1):
         photo_label_by_url[u] = f"{i:02d}. {f}"
 all_photo_urls = list(photo_label_by_url.keys())
 
-
 # ============================================================
-# DOCX generation helpers
+# DOCX generation helpers (used by Step 10)
 # ============================================================
 def _resolve_cover_bytes() -> Optional[bytes]:
     return step_1_cover.resolve_cover_bytes()
@@ -486,25 +464,18 @@ def _resolve_cover_bytes() -> Optional[bytes]:
 def _generate_docx() -> bool:
     cover_bytes = _resolve_cover_bytes()
     if cover_bytes is None:
-        st.session_state["tool5_docx_bytes"] = None
+        st.session_state["tool7_docx_bytes"] = None
         return False
 
-    # Step 3 caches
-    photo_bytes = st.session_state.get("photo_bytes", {}) or {}
-
-    # merged obs (Step 4)
+    photo_bytes = st.session_state.get("photo_bytes", {})
     component_observations = st.session_state.get("tool7_component_observations_final")
     if component_observations is None:
         component_observations = st.session_state.get("component_observations", [])
-    if not isinstance(component_observations, list):
-        component_observations = []
 
-    # Step 8 severity maps (if present)
     severity_by_no = st.session_state.get("tool7_severity_by_no") or {}
     severity_by_finding = st.session_state.get("tool7_severity_by_finding") or {}
     add_legend = bool(st.session_state.get("tool7_add_legend", True))
 
-    # Step 9 conclusion payload
     conclusion_payload = st.session_state.get("tool7_conclusion_payload") or {}
     conclusion_text = conclusion_payload.get("conclusion_text")
     key_points = conclusion_payload.get("key_points")
@@ -520,11 +491,9 @@ def _generate_docx() -> bool:
         component_observations=component_observations,
         photo_bytes=photo_bytes,
         photo_field_map=st.session_state.get("photo_field", {}),
-
         severity_by_no=severity_by_no,
         severity_by_finding=severity_by_finding,
         add_legend=add_legend,
-
         conclusion_text=conclusion_text,
         conclusion_key_points=key_points,
         conclusion_recommendations_summary=reco_summary,
@@ -534,12 +503,11 @@ def _generate_docx() -> bool:
     st.session_state["tool7_docx_bytes"] = docx_bytes
     return True
 
-
 # ============================================================
-# Context
+# Context object (what all step files expect)
 # ============================================================
 ctx = Tool6Context(
-    project_root=PROJECT_ROOT,
+    project_root=project_root,
     tool_name=tool_name,
     tpm_id=str(tpm_id),
     row=row,
@@ -547,20 +515,18 @@ ctx = Tool6Context(
     hints=hints,
     all_photo_urls=all_photo_urls,
     photo_label_by_url=photo_label_by_url,
-    audios=[],  # اگر بعداً audio links هم اضافه کردی، همینجا پر می‌شود
+    audios=[],
     unicef_logo_path=unicef_logo_path,
     act_logo_path=act_logo_path,
     ppc_logo_path=ppc_logo_path,
 )
 
-
 # ============================================================
 # Routing
 # ============================================================
 wiz.header()
-step = int(wiz.step_idx or 0)
+step = wiz.step_idx
 
-# ---------------- Step 1 ----------------
 if step == 0:
     ok = step_1_cover.render_step(ctx, fetch_image=fetch_image)
     b, n = wiz.nav(can_next=ok, back_label="Back", next_label="Next", generate_label="Generate")
@@ -568,7 +534,6 @@ if step == 0:
         st.rerun()
     st.stop()
 
-# ---------------- Step 2 ----------------
 if step == 1:
     ok = step_2_general_info.render_step(ctx)
     b, n = wiz.nav(can_next=ok, back_label="Back", next_label="Next", generate_label="Generate")
@@ -576,7 +541,6 @@ if step == 1:
         st.rerun()
     st.stop()
 
-# ---------------- Step 3 ----------------
 if step == 2:
     ok = step_3_observations.render_step(ctx, fetch_image=fetch_image)
     b, n = wiz.nav(can_next=ok, back_label="Back", next_label="Next", generate_label="Generate")
@@ -584,7 +548,6 @@ if step == 2:
         st.rerun()
     st.stop()
 
-# ---------------- Step 4 ----------------
 if step == 3:
     ok = step_4_findings_recommendations.render_step(ctx, fetch_image=fetch_image)
     b, n = wiz.nav(can_next=ok, back_label="Back", next_label="Next", generate_label="Generate")
@@ -592,7 +555,6 @@ if step == 3:
         st.rerun()
     st.stop()
 
-# ---------------- Step 5 ----------------
 if step == 4:
     if step_5_work_progress is None:
         status_card("Missing Step 5", "src/Tools/steps/step_5_work_progress.py not found.", level="error")
@@ -603,7 +565,6 @@ if step == 4:
         st.rerun()
     st.stop()
 
-# ---------------- Step 6 ----------------
 if step == 5:
     ok = step_6_executive_summary.render_step(ctx)
     b, n = wiz.nav(can_next=ok, back_label="Back", next_label="Next", generate_label="Generate")
@@ -611,7 +572,6 @@ if step == 5:
         st.rerun()
     st.stop()
 
-# ---------------- Step 7 ----------------
 if step == 6:
     ok = step_7_data_collection_methods.render_step(ctx)
     b, n = wiz.nav(can_next=ok, back_label="Back", next_label="Next", generate_label="Generate")
@@ -619,7 +579,6 @@ if step == 6:
         st.rerun()
     st.stop()
 
-# ---------------- Step 8 ----------------
 if step == 7:
     if step_8_summary_ui is not None:
         ok = step_8_summary_ui.render_step(ctx)
@@ -638,7 +597,6 @@ if step == 7:
         st.rerun()
     st.stop()
 
-# ---------------- Step 9 ----------------
 if step == 8:
     if step_9_conclusion_ui is not None:
         ok = step_9_conclusion_ui.render_step(ctx)
@@ -648,7 +606,7 @@ if step == 8:
         st.stop()
 
     st.subheader("Conclusion")
-    st.caption("If Step 9 module is missing, you can still write conclusion here quickly.")
+    st.caption("If you don’t have Step 9 module yet, you can still write conclusion here quickly.")
 
     payload = st.session_state.get("tool7_conclusion_payload") or {}
     txt = st.text_area("Conclusion text", value=str(payload.get("conclusion_text") or ""), height=140)
@@ -667,14 +625,14 @@ if step == 8:
         st.rerun()
     st.stop()
 
-# ---------------- Step 10 ----------------
 if step == 9:
     if step_10_generate_report is None:
         status_card("Missing Step 10", "src/Tools/steps/step_10_generate_report.py not found.", level="error")
         st.stop()
 
-    def _on_generate_docx() -> bool:
-        return bool(_generate_docx())
+    def _on_generate_docx():
+        ok2 = _generate_docx()
+        return bool(ok2)
 
     ok = step_10_generate_report.render_step(
         ctx,
