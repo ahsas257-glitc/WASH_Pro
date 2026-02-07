@@ -43,6 +43,46 @@ MF_BORDER_HEX = "000000"
 # =========================
 # HELPERS
 # =========================
+def _set_tbl_width_in(tbl, width_in: float) -> None:
+    """Set table width explicitly (prevents Word from collapsing columns)."""
+    tblPr = tbl._tbl.tblPr
+    tblW = tblPr.find(qn("w:tblW"))
+    if tblW is None:
+        tblW = OxmlElement("w:tblW")
+        tblPr.append(tblW)
+    tblW.set(qn("w:type"), "dxa")
+    tblW.set(qn("w:w"), str(int(width_in * 1440)))  # inches -> twips
+
+
+def _set_cell_width_in(cell, width_in: float) -> None:
+    """Set cell width explicitly via tcW."""
+    tcPr = cell._tc.get_or_add_tcPr()
+    tcW = tcPr.find(qn("w:tcW"))
+    if tcW is None:
+        tcW = OxmlElement("w:tcW")
+        tcPr.append(tcW)
+    tcW.set(qn("w:type"), "dxa")
+    tcW.set(qn("w:w"), str(int(width_in * 1440)))
+
+
+def _apply_2col_widths_hard(tbl, left_w_in: float, right_w_in: float) -> None:
+    """Hard-set widths at table + cell level (most reliable)."""
+    _set_table_fixed_layout(tbl)
+    _set_tbl_width_in(tbl, left_w_in + right_w_in)
+
+    row = tbl.rows[0]
+    _set_cell_width_in(row.cells[0], left_w_in)
+    _set_cell_width_in(row.cells[1], right_w_in)
+
+    # still set python-docx width props too (helpful but not sufficient alone)
+    try:
+        tbl.columns[0].width = Inches(left_w_in)
+        tbl.columns[1].width = Inches(right_w_in)
+        row.cells[0].width = Inches(left_w_in)
+        row.cells[1].width = Inches(right_w_in)
+    except Exception:
+        pass
+
 def s(v: Any) -> str:
     return "" if v is None else str(v).strip()
 
@@ -446,3 +486,4 @@ def add_observations_page(
                     rp = doc.add_paragraph(t, style="List Bullet")
                     _compact(rp)
                 _one_line_gap(doc)
+
