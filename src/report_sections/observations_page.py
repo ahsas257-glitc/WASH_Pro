@@ -16,20 +16,15 @@ from docx.oxml.ns import qn
 # =========================
 # CONSTANTS
 # =========================
-
-# ✅ You requested: photo width must be 3.5"
-PHOTO_W_IN = 3.50
-
-# Keep same aspect as your Step 3 (3.17 / 2.38)
+PHOTO_W_IN = 3.50  # ✅ required
 PHOTO_ASPECT = 3.17 / 2.38
-PHOTO_H_IN = PHOTO_W_IN / PHOTO_ASPECT  # auto height preserving that crop aspect
+PHOTO_H_IN = PHOTO_W_IN / PHOTO_ASPECT
 
-# 2-column layout (equal split)
-TEXT_COL_W_IN = 3.64
-PHOTO_COL_W_IN = 3.64
+# For photo-wise rows: left text + right photo
+LEFT_TEXT_W_IN = 3.64
+RIGHT_PHOTO_W_IN = 3.64
 
-# spacing between photos inside right column (lines)
-PHOTO_GAP_LINES = 1
+PHOTO_GAP_LINES = 1  # spacing between photo blocks
 
 # Major findings table widths
 MF_COL_NO = 0.38
@@ -38,7 +33,6 @@ MF_COL_COMP = 0.91
 MF_COL_PHOTO = 3.13
 MF_COL_WIDTHS = [MF_COL_NO, MF_COL_FIND, MF_COL_COMP, MF_COL_PHOTO]
 
-# Header styling
 MF_HEADER_FILL_HEX = "2F5597"
 MF_BORDER_HEX = "000000"
 
@@ -63,12 +57,10 @@ def _one_line_gap(doc: Document) -> None:
 
 
 def _set_table_fixed_layout(tbl) -> None:
-    """Force Word to keep column widths stable (prevents auto-resize)."""
     try:
         tbl.allow_autofit = False  # type: ignore[attr-defined]
     except Exception:
         pass
-
     tbl.autofit = False
     tblPr = tbl._tbl.tblPr
     tblLayout = tblPr.find(qn("w:tblLayout"))
@@ -79,7 +71,6 @@ def _set_table_fixed_layout(tbl) -> None:
 
 
 def _set_tbl_width_in(tbl, width_in: float) -> None:
-    """Set table width explicitly (prevents Word from collapsing columns)."""
     tblPr = tbl._tbl.tblPr
     tblW = tblPr.find(qn("w:tblW"))
     if tblW is None:
@@ -90,7 +81,6 @@ def _set_tbl_width_in(tbl, width_in: float) -> None:
 
 
 def _set_cell_width_in(cell, width_in: float) -> None:
-    """Set cell width explicitly via tcW."""
     tcPr = cell._tc.get_or_add_tcPr()
     tcW = tcPr.find(qn("w:tcW"))
     if tcW is None:
@@ -101,13 +91,6 @@ def _set_cell_width_in(cell, width_in: float) -> None:
 
 
 def _apply_2col_widths_hard(tbl, left_w_in: float, right_w_in: float) -> None:
-    """
-    ✅ The most reliable 2-col sizing:
-    - fixed layout
-    - tblW (table width)
-    - tcW (cell widths)
-    - plus python-docx widths
-    """
     _set_table_fixed_layout(tbl)
     _set_tbl_width_in(tbl, left_w_in + right_w_in)
 
@@ -115,7 +98,7 @@ def _apply_2col_widths_hard(tbl, left_w_in: float, right_w_in: float) -> None:
     _set_cell_width_in(row.cells[0], left_w_in)
     _set_cell_width_in(row.cells[1], right_w_in)
 
-    # still set python-docx widths too
+    # also set python-docx widths
     try:
         tbl.columns[0].width = Inches(left_w_in)
         tbl.columns[1].width = Inches(right_w_in)
@@ -123,14 +106,6 @@ def _apply_2col_widths_hard(tbl, left_w_in: float, right_w_in: float) -> None:
         row.cells[1].width = Inches(right_w_in)
     except Exception:
         pass
-
-
-def _apply_table_col_widths(tbl, widths_in: List[float]) -> None:
-    _set_table_fixed_layout(tbl)
-    for i, w in enumerate(widths_in):
-        tbl.columns[i].width = Inches(float(w))
-        for cell in tbl.columns[i].cells:
-            cell.width = Inches(float(w))
 
 
 def _remove_table_borders(tbl) -> None:
@@ -147,8 +122,15 @@ def _remove_table_borders(tbl) -> None:
         e.set(qn("w:val"), "nil")
 
 
+def _apply_table_col_widths(tbl, widths_in: List[float]) -> None:
+    _set_table_fixed_layout(tbl)
+    for i, w in enumerate(widths_in):
+        tbl.columns[i].width = Inches(float(w))
+        for cell in tbl.columns[i].cells:
+            cell.width = Inches(float(w))
+
+
 def _set_table_borders(tbl, *, color_hex: str = MF_BORDER_HEX, size: str = "12") -> None:
-    """Black borders (size in eighths of a point). 12 => 1.5pt."""
     color_hex = s(color_hex).replace("#", "") or "000000"
     t = tbl._tbl
     tbl_pr = t.tblPr
@@ -180,13 +162,12 @@ def _shade_cell(cell, fill_hex: str) -> None:
     shd.set(qn("w:fill"), fill_hex)
 
 
-def _set_cell_margins(cell, start=80, end=80, top=0, bottom=0) -> None:
+def _set_cell_margins(cell, start=70, end=70, top=0, bottom=0) -> None:
     tcPr = cell._tc.get_or_add_tcPr()
     tcMar = tcPr.find(qn("w:tcMar"))
     if tcMar is None:
         tcMar = OxmlElement("w:tcMar")
         tcPr.append(tcMar)
-
     for name, val in (("start", start), ("end", end), ("top", top), ("bottom", bottom)):
         node = tcMar.find(qn(f"w:{name}"))
         if node is None:
@@ -218,7 +199,6 @@ def _crop_to_aspect(img: Image.Image, target_aspect: float) -> Image.Image:
 
 
 def _to_clean_png_fit_box(b: bytes, *, target_aspect: float) -> Optional[bytes]:
-    """Crop to target aspect + export PNG."""
     if not b or _bytes_look_like_html(b):
         return None
     try:
@@ -238,23 +218,9 @@ def _add_blank_lines_in_cell(cell, n: int) -> None:
 
 
 def _extract_obs_no_prefix(obs_title: str) -> str:
-    """From: '5.1. Some title' -> '5.1'"""
     t = s(obs_title)
     m = re.match(r"^\s*(\d+\.\d+)\.", t)
     return m.group(1) if m else ""
-
-
-def _set_run_font(run, *, size_pt: int, bold: bool, color: Optional[RGBColor] = None) -> None:
-    try:
-        run.font.size = Pt(float(size_pt))
-    except Exception:
-        pass
-    run.bold = bool(bold)
-    if color is not None:
-        try:
-            run.font.color.rgb = color
-        except Exception:
-            pass
 
 
 def _write_cell_text(
@@ -263,15 +229,20 @@ def _write_cell_text(
     *,
     align=WD_ALIGN_PARAGRAPH.LEFT,
     bold: bool = False,
-    size_pt: int = 9,
-    color: Optional[RGBColor] = None,
+    size_pt: int = 10,
+    italic: bool = False,
 ) -> None:
     cell.text = ""
     p = cell.paragraphs[0]
     p.alignment = align
     _compact(p)
     r = p.add_run(s(text))
-    _set_run_font(r, size_pt=size_pt, bold=bold, color=color)
+    r.bold = bool(bold)
+    r.italic = bool(italic)
+    try:
+        r.font.size = Pt(float(size_pt))
+    except Exception:
+        pass
 
 
 def _add_major_findings_table(
@@ -280,7 +251,6 @@ def _add_major_findings_table(
     major_rows: List[Dict[str, Any]],
     photo_bytes: Dict[str, bytes],
 ) -> None:
-    """Table with black borders, blue header, white bold text size 10."""
     tbl = doc.add_table(rows=1, cols=4)
     tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
     tbl.style = "Table Grid"
@@ -290,20 +260,20 @@ def _add_major_findings_table(
 
     headers = ["NO", "Findings", "Compliance", "Photos"]
     hdr_cells = tbl.rows[0].cells
-
     for i, txt in enumerate(headers):
         c = hdr_cells[i]
         c.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
         _shade_cell(c, MF_HEADER_FILL_HEX)
         _set_cell_margins(c, start=90, end=90, top=50, bottom=50)
-        _write_cell_text(
-            c,
-            txt,
-            align=WD_ALIGN_PARAGRAPH.CENTER,
-            bold=True,
-            size_pt=10,
-            color=RGBColor(255, 255, 255),
-        )
+        # white bold
+        cell_p = c.paragraphs[0]
+        cell_p.text = ""
+        cell_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        _compact(cell_p)
+        run = cell_p.add_run(txt)
+        run.bold = True
+        run.font.color.rgb = RGBColor(255, 255, 255)
+        run.font.size = Pt(10)
 
     for idx, rdata in enumerate(major_rows, start=1):
         if not isinstance(rdata, dict):
@@ -314,9 +284,9 @@ def _add_major_findings_table(
             c.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
             _set_cell_margins(c, start=90, end=90, top=50, bottom=50)
 
-        _write_cell_text(row[0], str(idx), align=WD_ALIGN_PARAGRAPH.LEFT, bold=False, size_pt=9)
-        _write_cell_text(row[1], rdata.get("finding"), align=WD_ALIGN_PARAGRAPH.JUSTIFY, bold=False, size_pt=9)
-        _write_cell_text(row[2], rdata.get("compliance"), align=WD_ALIGN_PARAGRAPH.LEFT, bold=False, size_pt=9)
+        _write_cell_text(row[0], str(idx), align=WD_ALIGN_PARAGRAPH.LEFT, size_pt=9)
+        _write_cell_text(row[1], rdata.get("finding"), align=WD_ALIGN_PARAGRAPH.JUSTIFY, size_pt=9)
+        _write_cell_text(row[2], rdata.get("compliance"), align=WD_ALIGN_PARAGRAPH.LEFT, size_pt=9)
 
         row[3].text = ""
         pph = row[3].paragraphs[0]
@@ -343,14 +313,26 @@ def add_observations_page(
     component_observations: List[Dict[str, Any]],
     photo_bytes: Dict[str, bytes],
 ) -> None:
+    """
+    ✅ Matches your Step 3 schema:
+      obs = {
+        "title": "...",
+        "audio_url": "...",
+        "photos": [{"url": "...", "text": "...", "bytes": ...}],
+        "major_table": [...],
+        "recommendations": [...]
+      }
+
+    ✅ Output like your screenshot:
+      For EACH photo -> a 2-column row:
+        LEFT  = photo text
+        RIGHT = photo (3.5")
+    """
     if not component_observations:
         return
 
     photo_bytes = photo_bytes or {}
 
-    # ==========================
-    # PAGE TITLE
-    # ==========================
     doc.add_page_break()
     h = doc.add_paragraph("5. Observations")
     h.style = "Heading 1"
@@ -368,9 +350,7 @@ def add_observations_page(
             if not isinstance(obs, dict):
                 continue
 
-            # -----------------------------------------
-            # Observation title (Heading 2, size 16)
-            # -----------------------------------------
+            # ---- observation title
             obs_title = s(obs.get("title"))
             ot = doc.add_paragraph(obs_title)
             ot.style = "Heading 2"
@@ -381,104 +361,94 @@ def add_observations_page(
                 except Exception:
                     pass
 
-            # -----------------------------------------
-            # ✅ Main 2-column FIXED layout (HARD widths)
-            # LEFT  = overall text (obs["text"])
-            # RIGHT = photos stacked
-            # -----------------------------------------
-            tbl = doc.add_table(rows=1, cols=2)
-            tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
-            _remove_table_borders(tbl)
-
-            # ✅ CRITICAL: hard widths so left column never collapses
-            _apply_2col_widths_hard(tbl, TEXT_COL_W_IN, PHOTO_COL_W_IN)
-
-            left, right = tbl.rows[0].cells
-            left.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-            right.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
-
-            _set_cell_margins(left, start=80, end=120)
-            # ✅ slightly smaller to avoid squeezing the left col
-            _set_cell_margins(right, start=60, end=60)
-
-            # LEFT text
-            ptxt = left.paragraphs[0]
-            ptxt.text = s(obs.get("text"))
-            ptxt.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
-            _compact(ptxt)
-
-            # RIGHT photos (no nested tables)
-            right.paragraphs[0].text = ""
-            _compact(right.paragraphs[0])
-
             photos = obs.get("photos") or []
             if not isinstance(photos, list):
                 photos = []
 
-            any_added = False
-            for i, ph in enumerate(photos):
-                if not isinstance(ph, dict):
-                    continue
-
-                url = s(ph.get("url"))
-                embedded = ph.get("bytes")
-                if isinstance(embedded, bytearray):
-                    embedded = bytes(embedded)
-
-                b = embedded if isinstance(embedded, (bytes, bytearray)) and embedded else photo_bytes.get(url)
-                clean = _to_clean_png_fit_box(b, target_aspect=PHOTO_ASPECT) if b else None
-
-                if i > 0:
-                    _add_blank_lines_in_cell(right, PHOTO_GAP_LINES)
-
-                if not url:
-                    p = right.add_paragraph("Photo missing: empty url")
-                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                    _compact(p)
-                    continue
-
-                if not b:
-                    p = right.add_paragraph(f"Photo missing (not cached): {url}")
-                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                    _compact(p)
-                    continue
-
-                if not clean:
-                    p = right.add_paragraph(f"Photo unreadable: {url}")
-                    p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                    _compact(p)
-                    continue
-
-                pic_p = right.add_paragraph()
-                pic_p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-                _compact(pic_p)
-                pic_p.add_run().add_picture(
-                    io.BytesIO(clean),
-                    width=Inches(PHOTO_W_IN),     # ✅ EXACT 3.5"
-                    height=Inches(PHOTO_H_IN),
-                )
-                any_added = True
-
-            if photos and not any_added:
-                p = right.add_paragraph("Photos were selected but none could be inserted.")
-                p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+            # ✅ If no photos, still show something
+            if not photos:
+                p = doc.add_paragraph("No photos were selected for this observation.")
                 _compact(p)
-
-            # spacer after each observation block
-            _one_line_gap(doc)
-
-            # =====================================================
-            # Major findings + Recommendations (WITHIN observations)
-            # =====================================================
-            base_no = _extract_obs_no_prefix(obs_title)  # "5.1"
-            if base_no:
-                major_title = f"{base_no}.1 Major findings:"
-                reco_title = f"{base_no}.2 Recommendations:"
+                _one_line_gap(doc)
             else:
-                major_title = "Major findings:"
-                reco_title = "Recommendations:"
+                # ✅ For EACH photo: one 2-col table row (left text, right image)
+                for i, ph in enumerate(photos):
+                    if not isinstance(ph, dict):
+                        continue
 
-            # ---- Major findings
+                    url = s(ph.get("url"))
+                    txt = s(ph.get("text"))
+
+                    embedded = ph.get("bytes")
+                    if isinstance(embedded, bytearray):
+                        embedded = bytes(embedded)
+
+                    b = embedded if isinstance(embedded, (bytes, bytearray)) and embedded else photo_bytes.get(url)
+                    clean = _to_clean_png_fit_box(b, target_aspect=PHOTO_ASPECT) if b else None
+
+                    tbl = doc.add_table(rows=1, cols=2)
+                    tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
+                    _remove_table_borders(tbl)
+
+                    # ✅ hard widths so left text ALWAYS visible
+                    _apply_2col_widths_hard(tbl, LEFT_TEXT_W_IN, RIGHT_PHOTO_W_IN)
+
+                    left, right = tbl.rows[0].cells
+                    left.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+                    right.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.TOP
+
+                    _set_cell_margins(left, start=80, end=120)
+                    _set_cell_margins(right, start=60, end=60)
+
+                    # LEFT = photo text (NOT justified like screenshot)
+                    _write_cell_text(
+                        left,
+                        txt,
+                        align=WD_ALIGN_PARAGRAPH.LEFT,
+                        bold=False,
+                        size_pt=10,
+                        italic=False,
+                    )
+
+                    # RIGHT = photo (3.5")
+                    right.paragraphs[0].text = ""
+                    _compact(right.paragraphs[0])
+
+                    if not url:
+                        p = right.add_paragraph("Photo missing: empty url")
+                        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        _compact(p)
+                    elif not b:
+                        p = right.add_paragraph(f"Photo missing (not cached): {url}")
+                        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        _compact(p)
+                    elif not clean:
+                        p = right.add_paragraph(f"Photo unreadable: {url}")
+                        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        _compact(p)
+                    else:
+                        pic_p = right.add_paragraph()
+                        pic_p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+                        _compact(pic_p)
+                        pic_p.add_run().add_picture(
+                            io.BytesIO(clean),
+                            width=Inches(PHOTO_W_IN),     # ✅ EXACT 3.5"
+                            height=Inches(PHOTO_H_IN),
+                        )
+
+                    # spacing between photo blocks
+                    if i < len(photos) - 1:
+                        _one_line_gap(doc)
+
+                _one_line_gap(doc)
+
+            # =====================================================
+            # Major findings + Recommendations (optional)
+            # =====================================================
+            base_no = _extract_obs_no_prefix(obs_title)
+            major_title = f"{base_no}.1 Major findings:" if base_no else "Major findings:"
+            reco_title = f"{base_no}.2 Recommendations:" if base_no else "Recommendations:"
+
             major_rows = obs.get("major_table") or []
             if isinstance(major_rows, list) and len(major_rows) > 0:
                 mh = doc.add_paragraph(major_title)
@@ -488,16 +458,9 @@ def add_observations_page(
                     mh.runs[0].font.color.rgb = RGBColor(0, 0, 0)
 
                 _one_line_gap(doc)
-
-                _add_major_findings_table(
-                    doc,
-                    major_rows=major_rows,
-                    photo_bytes=photo_bytes,
-                )
-
+                _add_major_findings_table(doc, major_rows=major_rows, photo_bytes=photo_bytes)
                 _one_line_gap(doc)
 
-            # ---- Recommendations
             recs = obs.get("recommendations") or []
             if isinstance(recs, list) and any(s(x) for x in recs):
                 rh = doc.add_paragraph(reco_title)
@@ -507,12 +470,10 @@ def add_observations_page(
                     rh.runs[0].font.color.rgb = RGBColor(0, 0, 0)
 
                 _one_line_gap(doc)
-
-                for txt in recs:
-                    t = s(txt)
-                    if not t:
+                for t in recs:
+                    tx = s(t)
+                    if not tx:
                         continue
-                    rp = doc.add_paragraph(t, style="List Bullet")
+                    rp = doc.add_paragraph(tx, style="List Bullet")
                     _compact(rp)
-
                 _one_line_gap(doc)
