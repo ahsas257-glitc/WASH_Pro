@@ -66,7 +66,7 @@ def _ensure_obs_block(b: Dict[str, Any]) -> Dict[str, Any]:
 
 def _ensure_finding_row(r: Dict[str, Any]) -> Dict[str, Any]:
     r.setdefault("finding", "")
-    r.setdefault("Tools", "")
+    r.setdefault("Compliance", "")
     r.setdefault("photo", "")  # URL only (bytes go to SS_PHOTO_BYTES)
     return r
 
@@ -103,14 +103,14 @@ def _parse_bulk_findings(text: str) -> List[Dict[str, Any]]:
             if left.lower() in ("yes", "no", "n/a", "na"):
                 out.append(
                     {
-                        "Tools": "N/A" if left.lower() in ("n/a", "na") else left.title(),
+                        "Compliance": "N/A" if left.lower() in ("n/a", "na") else left.title(),
                         "finding": right,
                         "photo": "",
                     }
                 )
                 continue
 
-        out.append({"Tools": "", "finding": line, "photo": ""})
+        out.append({"Compliance": "", "finding": line, "photo": ""})
 
     return out
 
@@ -199,7 +199,7 @@ def _merge_to_final() -> List[Dict[str, Any]]:
             for rr in (blk.get("findings") or []):
                 rr = _ensure_finding_row(rr)
                 finding = _s(rr.get("finding"))
-                tools_val = _s(rr.get("Tools"))
+                tools_val = _s(rr.get("Compliance"))
                 photo = _s(rr.get("photo"))
                 photo_bytes = photo_cache.get(photo) if photo else None
 
@@ -207,7 +207,7 @@ def _merge_to_final() -> List[Dict[str, Any]]:
                     major_table.append(
                         {
                             "finding": finding,
-                            "Tools": tools_val,
+                            "Compliance": tools_val,
                             "photo": photo,
                             "photo_bytes": photo_bytes,
                         }
@@ -414,13 +414,13 @@ def render_step(
                                 disabled=locked,
                             )
                         with c2:
-                            cur_tools = _s(rr.get("Tools"))
+                            cur_tools = _s(rr.get("Compliance"))
                             idx = tools_opts.index(cur_tools) if cur_tools in tools_opts else 0
-                            rr["Tools"] = st.selectbox(
-                                "Tools",
+                            rr["Compliance"] = st.selectbox(
+                                "Compliance",
                                 options=tools_opts,
                                 index=idx,
-                                key=_key("tools", comp_i, obs_i, r_idx),
+                                key=_key("Compliance", comp_i, obs_i, r_idx),
                                 disabled=locked,
                             )
                         with c3:
@@ -528,3 +528,4 @@ def render_step(
             break
 
     return ok_any
+
