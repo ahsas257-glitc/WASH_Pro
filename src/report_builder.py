@@ -28,6 +28,42 @@ from src.report_sections.conclusion import add_conclusion_section
 
 
 # =============================================================================
+# Optional import: Section 6 (Summary of Findings)
+# =============================================================================
+def _import_summary_of_findings_section6():
+    """
+    Robust import resolver for Section 6:
+    Tries common module names so your project won't break if you renamed the file.
+
+    Must expose: add_summary_of_findings_section6(doc, extracted_rows=..., severity_by_no=..., severity_by_finding=..., add_legend=..., ...)
+    """
+    candidates = [
+        ("src.report_sections.summary_of_findings", "add_summary_of_findings_section6"),
+        ("src.report_sections.summary_of_the_findings", "add_summary_of_findings_section6"),
+        ("src.report_sections.section6_summary_of_findings", "add_summary_of_findings_section6"),
+        ("src.report_sections.summary_findings", "add_summary_of_findings_section6"),
+    ]
+    last_err = None
+    for mod_name, fn_name in candidates:
+        try:
+            mod = __import__(mod_name, fromlist=[fn_name])
+            fn = getattr(mod, fn_name)
+            if callable(fn):
+                return fn
+        except Exception as e:
+            last_err = e
+            continue
+
+    raise ImportError(
+        "Cannot import add_summary_of_findings_section6.\n"
+        "Expected a module like:\n"
+        " - src/report_sections/summary_of_findings.py\n"
+        "With a callable function: add_summary_of_findings_section6\n"
+        f"Last error: {last_err}"
+    )
+
+
+# =============================================================================
 # Tool6 state helpers (single source of truth)
 # =============================================================================
 def _get_tool6_state_fallback(
@@ -235,6 +271,105 @@ def _get_work_progress_rows_fallback(
 
 
 # =============================================================================
+# Step 8 (Summary of Findings) payload helpers
+# =============================================================================
+def _safe_int_key_dict(d: Any) -> Dict[int, str]:
+    if not isinstance(d, dict):
+        return {}
+    out: Dict[int, str] = {}
+    for k, v in d.items():
+        try:
+            ik = int(k)
+        except Exception:
+            continue
+        sv = str(v).strip() if v is not None else ""
+        if sv:
+            out[ik] = sv
+    return out
+
+
+def _safe_str_dict(d: Any) -> Dict[str, str]:
+    if not isinstance(d, dict):
+        return {}
+    out: Dict[str, str] = {}
+    for k, v in d.items():
+        if not isinstance(k, str):
+            continue
+        sv = str(v).strip() if v is not None else ""
+        if sv:
+            out[k] = sv
+    return out
+
+
+def _safe_extracted_rows(rows: Any) -> List[Dict[str, str]]:
+    """
+    Expected: [{"finding": "...", "recommendation": "..."}]
+    """
+    if not isinstance(rows, list):
+        return []
+    out: List[Dict[str, str]] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        f = str(r.get("finding") or "").strip()
+        if not f:
+            continue
+        rec = str(r.get("recommendation") or "").strip()
+        out.append({"finding": f, "recommendation": rec})
+    return out
+
+
+def _get_summary_findings_payload_fallback(
+    *,
+    general_info_overrides: Optional[dict],
+) -> Tuple[List[Dict[str, str]], Dict[int, str], Dict[str, str], bool]:
+    """
+    Pull Step 8 outputs for Section 6 printing.
+
+    Priority:
+      A) general_info_overrides (if you choose to persist there later)
+      B) Streamlit session_state keys from Step 8:
+         - tool6_summary_findings_extracted
+         - tool6_severity_by_no
+         - tool6_severity_by_finding
+         - tool6_add_legend
+    """
+    extracted_rows: List[Dict[str, str]] = []
+    sev_by_no: Dict[int, str] = {}
+    sev_by_finding: Dict[str, str] = {}
+    add_legend = True
+
+    # A) overrides
+    if isinstance(general_info_overrides, dict):
+        extracted_rows = _safe_extracted_rows(general_info_overrides.get("tool6_summary_findings_extracted"))
+        sev_by_no = _safe_int_key_dict(general_info_overrides.get("tool6_severity_by_no"))
+        sev_by_finding = _safe_str_dict(general_info_overrides.get("tool6_severity_by_finding"))
+        if "tool6_add_legend" in general_info_overrides:
+            add_legend = bool(general_info_overrides.get("tool6_add_legend", True))
+
+    # B) session_state fallback (preferred in your current architecture)
+    try:
+        import streamlit as st
+
+        if not extracted_rows:
+            extracted_rows = _safe_extracted_rows(st.session_state.get("tool6_summary_findings_extracted"))
+
+        if not sev_by_no:
+            sev_by_no = _safe_int_key_dict(st.session_state.get("tool6_severity_by_no"))
+
+        if not sev_by_finding:
+            sev_by_finding = _safe_str_dict(st.session_state.get("tool6_severity_by_finding"))
+
+        if "tool6_add_legend" in st.session_state:
+            add_legend = bool(st.session_state.get("tool6_add_legend", True))
+
+    except Exception:
+        pass
+
+    return extracted_rows, sev_by_no, sev_by_finding, add_legend
+
+
+# =============================================================================
 # Page / Word utilities
 # =============================================================================
 def set_page_a4(section) -> None:
@@ -305,6 +440,7 @@ def _call_compat(fn: Callable, *args, **kwargs):
         sig = inspect.signature(fn)
         accepted = sig.parameters.keys()
         filtered = {k: v for k, v in kwargs.items() if k in accepted}
+        # Keep args but avoid passing too many
         return fn(*args[: len(accepted)], **filtered)
 
 
@@ -352,6 +488,39 @@ def _build_base_doc(
 
 
 # =============================================================================
+# Helpers: activity titles extraction (better alignment with Step 3/5)
+# =============================================================================
+def _extract_activity_titles_from_component_observations(component_observations: List[Dict[str, Any]]) -> List[str]:
+    """
+    Prefer extracting titles from observations_valid[*].title (these are the real "activities" titles).
+    Deduplicate while preserving order.
+    """
+    titles: List[str] = []
+    for comp in component_observations or []:
+        if not isinstance(comp, dict):
+            continue
+        ov = comp.get("observations_valid") or []
+        if not isinstance(ov, list):
+            continue
+        for ob in ov:
+            if not isinstance(ob, dict):
+                continue
+            t = strip_heading_numbering(ob.get("title"))
+            if t:
+                titles.append(t)
+
+    # de-dup keep order
+    seen = set()
+    out: List[str] = []
+    for t in titles:
+        if t in seen:
+            continue
+        seen.add(t)
+        out.append(t)
+    return out
+
+
+# =============================================================================
 # MAIN PUBLIC API — Tool6 Full Report
 # =============================================================================
 def build_tool6_full_report_docx(
@@ -395,6 +564,18 @@ def build_tool6_full_report_docx(
     general_info_overrides["__work_progress_rows__"] = wp_rows
 
     # ------------------------------------------------------------------
+    # Step 8 rows (Summary of Findings -> Section 6)
+    # ------------------------------------------------------------------
+    extracted_rows, severity_by_no, severity_by_finding, add_legend = _get_summary_findings_payload_fallback(
+        general_info_overrides=general_info_overrides
+    )
+    # Optionally persist (helps later sections that rely on overrides)
+    general_info_overrides["tool6_summary_findings_extracted"] = extracted_rows
+    general_info_overrides["tool6_severity_by_no"] = severity_by_no
+    general_info_overrides["tool6_severity_by_finding"] = severity_by_finding
+    general_info_overrides["tool6_add_legend"] = bool(add_legend)
+
+    # ------------------------------------------------------------------
     # Photo bytes (robust merge)
     # ------------------------------------------------------------------
     photo_bytes_in = _safe_bytes_dict(photo_bytes)
@@ -433,12 +614,7 @@ def build_tool6_full_report_docx(
     # ------------------------------------------------------------------
     # Section 4 — Work Progress Summary
     # ------------------------------------------------------------------
-    activity_titles = [
-        strip_heading_numbering(c.get("title") or c.get("comp_id"))
-        for c in component_observations
-        if isinstance(c, dict)
-    ]
-
+    activity_titles = _extract_activity_titles_from_component_observations(component_observations)
     rows_for_docx = wp_rows if wp_rows else None
 
     _call_compat(
@@ -450,16 +626,29 @@ def build_tool6_full_report_docx(
     )
 
     # ------------------------------------------------------------------
-    # Section 5 — Observations (includes Major findings + Recommendations inside)
+    # Section 5 — Observations (Major findings + Recommendations inside)
     # ------------------------------------------------------------------
-    # ✅ IMPORTANT: Findings/Recommendations must NOT be a separate section/page anymore.
-    # We try to call add_observations_page with an extra flag, but remain backward compatible.
     _call_compat(
         add_observations_page,
         doc,
         component_observations=component_observations,
         photo_bytes=photo_bytes_final,
-        include_findings_recommendations=True,  # ✅ if your observations_page supports it
+        include_findings_recommendations=True,  # if your observations_page supports it
+    )
+
+    # ------------------------------------------------------------------
+    # ✅ Section 6 — Summary of the findings (from Step 8)
+    # ------------------------------------------------------------------
+    add_summary_of_findings_section6 = _import_summary_of_findings_section6()
+
+    _call_compat(
+        add_summary_of_findings_section6,
+        doc,
+        extracted_rows=extracted_rows,
+        severity_by_no=severity_by_no,
+        severity_by_finding=severity_by_finding,
+        add_legend=bool(add_legend),
+        add_page_break_before=True,
     )
 
     # ------------------------------------------------------------------
