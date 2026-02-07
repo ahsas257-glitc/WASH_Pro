@@ -334,7 +334,7 @@ def add_observations_page(
     photo_bytes = photo_bytes or {}
 
     doc.add_page_break()
-    h = doc.add_paragraph("5. Observations")
+    h = doc.add_paragraph("5. Project Component Wise Key Observations:")
     h.style = "Heading 1"
     _compact(h)
 
@@ -477,3 +477,4 @@ def add_observations_page(
                     rp = doc.add_paragraph(tx, style="List Bullet")
                     _compact(rp)
                 _one_line_gap(doc)
+
