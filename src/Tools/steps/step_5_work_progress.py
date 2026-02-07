@@ -117,14 +117,34 @@ def _titles_hash(titles: List[str]) -> str:
 def _default_rows_from_titles(titles: List[str]) -> List[Dict[str, str]]:
     if not titles:
         return [
-            {"No.": str(i), "Activities": "", "Planned": "", "Achieved": "", "Progress": "", "Remarks": ""}
+            {
+                "No.": str(i),
+                "Activities": "",
+                "Planned": "",
+                "Planned Unit": "",
+                "Achieved": "",
+                "Achieved Unit": "",
+                "Progress": "",
+                "Remarks": "",
+            }
             for i in range(1, UIConfig.DEFAULT_EMPTY_ROWS + 1)
         ]
 
     rows: List[Dict[str, str]] = []
     for i, t in enumerate(titles, start=1):
         act = strip_heading_numbering(t) or t
-        rows.append({"No.": str(i), "Activities": act, "Planned": "", "Achieved": "", "Progress": "", "Remarks": ""})
+        rows.append(
+            {
+                "No.": str(i),
+                "Activities": act,
+                "Planned": "",
+                "Planned Unit": "",
+                "Achieved": "",
+                "Achieved Unit": "",
+                "Progress": "",
+                "Remarks": "",
+            }
+        )
     return rows
 
 
@@ -141,7 +161,9 @@ def _normalize_rows(rows: Any) -> List[Dict[str, str]]:
                 "No.": str(i),
                 "Activities": _s(r.get("Activities")),
                 "Planned": _s(r.get("Planned")),
+                "Planned Unit": _s(r.get("Planned Unit")),
                 "Achieved": _s(r.get("Achieved")),
+                "Achieved Unit": _s(r.get("Achieved Unit")),
                 "Progress": _s(r.get("Progress")),
                 "Remarks": _s(r.get("Remarks")),
             }
@@ -200,7 +222,16 @@ def _sync_rows_if_titles_changed() -> None:
         if act in by_act:
             row = dict(by_act[act])
         else:
-            row = {"No.": str(i), "Activities": act, "Planned": "", "Achieved": "", "Progress": "", "Remarks": ""}
+            row = {
+                "No.": str(i),
+                "Activities": act,
+                "Planned": "",
+                "Planned Unit": "",
+                "Achieved": "",
+                "Achieved Unit": "",
+                "Progress": "",
+                "Remarks": "",
+            }
         row["No."] = str(i)
         new_rows.append(row)
 
@@ -242,7 +273,18 @@ def _calc_progress(planned: float, achieved: float) -> int:
 
 def _add_empty_row() -> None:
     rows = _normalize_rows(st.session_state.get(SS_WORK, []))
-    rows.append({"No.": str(len(rows) + 1), "Activities": "", "Planned": "", "Achieved": "", "Progress": "", "Remarks": ""})
+    rows.append(
+        {
+            "No.": str(len(rows) + 1),
+            "Activities": "",
+            "Planned": "",
+            "Planned Unit": "",
+            "Achieved": "",
+            "Achieved Unit": "",
+            "Progress": "",
+            "Remarks": "",
+        }
+    )
     st.session_state[SS_WORK] = _normalize_rows(rows)
 
 
@@ -331,7 +373,7 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                 with h2:
                     st.button("Remove", use_container_width=True, key=_key("rm", i), on_click=_remove_row, args=(i,))
 
-                colA, colB, colC, colD, colE = st.columns([3.0, 1.2, 1.2, 2.2, 2.4], gap="small")
+                colA, colB, colC, colD, colE = st.columns([3.0, 1.6, 1.6, 2.2, 2.4], gap="small")
 
                 with colA:
                     activities = st.text_input(
@@ -341,25 +383,47 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                         placeholder="e.g., Construction of boundary wall",
                     )
 
+                # Planned + Unit
                 with colB:
-                    planned_val = st.number_input(
-                        "Planned",
-                        min_value=UIConfig.VALUE_MIN,
-                        value=float(_safe_float(_s(r.get("Planned")))),
-                        step=float(UIConfig.VALUE_STEP),
-                        format=UIConfig.VALUE_FORMAT,
-                        key=_key("planned", i),
-                    )
+                    p1, p2 = st.columns([2.2, 1.0], gap="small")
+                    with p1:
+                        planned_val = st.number_input(
+                            "Planned",
+                            min_value=UIConfig.VALUE_MIN,
+                            value=float(_safe_float(_s(r.get("Planned")))),
+                            step=float(UIConfig.VALUE_STEP),
+                            format=UIConfig.VALUE_FORMAT,
+                            key=_key("planned", i),
+                        )
+                    with p2:
+                        planned_unit = st.text_input(
+                            "Unit",
+                            value=_s(r.get("Planned Unit")),
+                            key=_key("planned_unit", i),
+                            placeholder="e.g., pcs",
+                            label_visibility="visible",
+                        )
 
+                # Achieved + Unit
                 with colC:
-                    achieved_val = st.number_input(
-                        "Achieved",
-                        min_value=UIConfig.VALUE_MIN,
-                        value=float(_safe_float(_s(r.get("Achieved")))),
-                        step=float(UIConfig.VALUE_STEP),
-                        format=UIConfig.VALUE_FORMAT,
-                        key=_key("achieved", i),
-                    )
+                    a1, a2 = st.columns([2.2, 1.0], gap="small")
+                    with a1:
+                        achieved_val = st.number_input(
+                            "Achieved",
+                            min_value=UIConfig.VALUE_MIN,
+                            value=float(_safe_float(_s(r.get("Achieved")))),
+                            step=float(UIConfig.VALUE_STEP),
+                            format=UIConfig.VALUE_FORMAT,
+                            key=_key("achieved", i),
+                        )
+                    with a2:
+                        achieved_unit = st.text_input(
+                            "Unit",
+                            value=_s(r.get("Achieved Unit")),
+                            key=_key("achieved_unit", i),
+                            placeholder="e.g., m",
+                            label_visibility="visible",
+                        )
 
                 with colD:
                     if auto_calc:
@@ -418,7 +482,9 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                         "No.": str(i + 1),
                         "Activities": _s(activities),
                         "Planned": _num_to_str(float(planned_val)),
+                        "Planned Unit": _s(planned_unit),
                         "Achieved": _num_to_str(float(achieved_val)),
+                        "Achieved Unit": _s(achieved_unit),
                         "Progress": _format_progress(final_pct),
                         "Remarks": _s(remarks),
                     }
