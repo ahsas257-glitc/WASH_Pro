@@ -6,3 +6,4 @@ python-docx
 pymupdf
 pillow
 streamlit-js-eval
+deep-translator
