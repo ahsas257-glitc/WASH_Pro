@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 import streamlit as st
@@ -18,6 +19,9 @@ SS_FINAL = "tool6_component_observations_final"  # merged output for DOCX
 SS_LOCK = "tool6_report_locked"                  # lock flag
 SS_PHOTO_BYTES = "photo_bytes"                   # shared cache (used by Tool6 final DOCX)
 
+# NEW: annotated photo outputs
+SS_PHOTO_MARKUP_BYTES = "photo_markup_bytes"     # {cache_key: png_bytes}
+
 
 # =============================================================================
 # Small utils
@@ -27,12 +31,40 @@ def _s(v: Any) -> str:
 
 
 def _key(*parts: Any) -> str:
-    """
-    Short, stable Streamlit keys (avoid DuplicateWidgetID).
-    """
     raw = ".".join(str(p) for p in parts)
     h = hashlib.md5(raw.encode("utf-8")).hexdigest()[:10]
     return f"t6.s4.{h}"
+
+
+def _inject_gallery_css() -> None:
+    st.markdown(
+        """
+        <style>
+          .t6-photo-grid{
+            display:grid;
+            grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+            gap:12px;
+            align-items:start;
+          }
+          @media (min-width: 1400px){
+            .t6-photo-grid{ grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+          }
+          @media (max-width: 520px){
+            .t6-photo-grid{ grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); }
+          }
+          .t6-photo-card img{
+            width:100% !important;
+            height:160px !important;
+            object-fit:cover !important;
+            border-radius:12px !important;
+          }
+          @media (max-width: 520px){
+            .t6-photo-card img{ height:140px !important; }
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 def _ensure_state() -> None:
@@ -41,11 +73,14 @@ def _ensure_state() -> None:
     ss.setdefault(SS_FINAL, [])
     ss.setdefault(SS_LOCK, False)
     ss.setdefault(SS_PHOTO_BYTES, {})
+    ss.setdefault(SS_PHOTO_MARKUP_BYTES, {})
 
     if not isinstance(ss[SS_FIND], list):
         ss[SS_FIND] = []
     if not isinstance(ss[SS_PHOTO_BYTES], dict):
         ss[SS_PHOTO_BYTES] = {}
+    if not isinstance(ss[SS_PHOTO_MARKUP_BYTES], dict):
+        ss[SS_PHOTO_MARKUP_BYTES] = {}
 
 
 def _ensure_comp(c: Dict[str, Any]) -> Dict[str, Any]:
@@ -66,8 +101,14 @@ def _ensure_obs_block(b: Dict[str, Any]) -> Dict[str, Any]:
 
 def _ensure_finding_row(r: Dict[str, Any]) -> Dict[str, Any]:
     r.setdefault("finding", "")
+    # IMPORTANT: the column must be named Compliance
     r.setdefault("Compliance", "")
-    r.setdefault("photo", "")  # URL only (bytes go to SS_PHOTO_BYTES)
+    # Backward compatible single field
+    r.setdefault("photo", "")
+    # NEW: multi-photo selection
+    r.setdefault("photos", [])  # List[str]
+    # UI helper: hide/show all after selection
+    r.setdefault("_show_all_photos", True)
     return r
 
 
@@ -84,7 +125,6 @@ def _unlock_ui_controls() -> None:
 
 
 def _obs_number(comp_index: int, obs_index: int) -> str:
-    # UI numbering only
     return f"5.{comp_index + 1}.{obs_index + 1}"
 
 
@@ -106,11 +146,13 @@ def _parse_bulk_findings(text: str) -> List[Dict[str, Any]]:
                         "Compliance": "N/A" if left.lower() in ("n/a", "na") else left.title(),
                         "finding": right,
                         "photo": "",
+                        "photos": [],
+                        "_show_all_photos": True,
                     }
                 )
                 continue
 
-        out.append({"Compliance": "", "finding": line, "photo": ""})
+        out.append({"Compliance": "", "finding": line, "photo": "", "photos": [], "_show_all_photos": True})
 
     return out
 
@@ -140,6 +182,23 @@ def _cache_photo_bytes(
     return None
 
 
+def _markup_cache_key(photo_url: str, markup_payload: Dict[str, Any]) -> str:
+    raw = photo_url + "::" + json.dumps(markup_payload or {}, ensure_ascii=False, sort_keys=True)
+    h = hashlib.md5(raw.encode("utf-8")).hexdigest()[:12]
+    return f"{photo_url}::mk::{h}"
+
+
+def _save_annotated_png_bytes(photo_url: str, markup_payload: Dict[str, Any], png_bytes: bytes) -> None:
+    cache = st.session_state.get(SS_PHOTO_MARKUP_BYTES, {}) or {}
+    cache[_markup_cache_key(photo_url, markup_payload)] = png_bytes
+    st.session_state[SS_PHOTO_MARKUP_BYTES] = cache
+
+
+def _get_annotated_png_bytes(photo_url: str, markup_payload: Dict[str, Any]) -> Optional[bytes]:
+    cache = st.session_state.get(SS_PHOTO_MARKUP_BYTES, {}) or {}
+    return cache.get(_markup_cache_key(photo_url, markup_payload))
+
+
 # =============================================================================
 # Merge Step 3 + Step 4 into SS_FINAL (DOCX-ready)
 # =============================================================================
@@ -151,8 +210,15 @@ def _merge_to_final() -> List[Dict[str, Any]]:
         comp_id, title,
         observations_valid: [
           {
-            title, text, audio_url, photos,
-            major_table: [{finding, Tools, photo, photo_bytes}],
+            title, text, audio_url,
+            major_table: [
+              {
+                finding, Compliance,
+                photos: [url...],
+                photo_bytes_list: [bytes|None...],
+                annotated_photo_bytes_list: [bytes|None...],
+              }
+            ],
             recommendations: [str...]
           }
         ]
@@ -162,6 +228,7 @@ def _merge_to_final() -> List[Dict[str, Any]]:
     obs = st.session_state.get(SS_OBS, []) or []
     find = st.session_state.get(SS_FIND, []) or []
     photo_cache: Dict[str, bytes] = st.session_state.get(SS_PHOTO_BYTES, {}) or {}
+    markup_cache: Dict[str, bytes] = st.session_state.get(SS_PHOTO_MARKUP_BYTES, {}) or {}
 
     final: List[Dict[str, Any]] = []
 
@@ -169,7 +236,6 @@ def _merge_to_final() -> List[Dict[str, Any]]:
         comp = {
             "comp_id": _s(comp3.get("comp_id")),
             "title": _s(comp3.get("title")),
-            # IMPORTANT: keep the list object, but we will safely mutate items
             "observations_valid": list(comp3.get("observations_valid") or []),
         }
 
@@ -198,18 +264,44 @@ def _merge_to_final() -> List[Dict[str, Any]]:
             major_table: List[Dict[str, Any]] = []
             for rr in (blk.get("findings") or []):
                 rr = _ensure_finding_row(rr)
-                finding = _s(rr.get("finding"))
-                tools_val = _s(rr.get("Compliance"))
-                photo = _s(rr.get("photo"))
-                photo_bytes = photo_cache.get(photo) if photo else None
 
-                if finding or tools_val or photo:
+                finding = _s(rr.get("finding"))
+                compliance = _s(rr.get("Compliance"))
+
+                # Multi photos
+                photos = rr.get("photos") if isinstance(rr.get("photos"), list) else []
+                photos = [ _s(x) for x in photos if _s(x) ]
+
+                # Backward compatible single photo if user used old UI
+                single_photo = _s(rr.get("photo"))
+                if single_photo and single_photo not in photos:
+                    photos = photos + [single_photo]
+
+                # bytes list
+                photo_bytes_list: List[Optional[bytes]] = []
+                annotated_bytes_list: List[Optional[bytes]] = []
+
+                # Optional: per-photo markup payload saved in row
+                markups = rr.get("photo_markups") if isinstance(rr.get("photo_markups"), dict) else {}
+
+                for purl in photos:
+                    photo_bytes_list.append(photo_cache.get(purl))
+
+                    payload = markups.get(purl) if isinstance(markups.get(purl), dict) else {}
+                    if payload:
+                        key = _markup_cache_key(purl, payload)
+                        annotated_bytes_list.append(markup_cache.get(key))
+                    else:
+                        annotated_bytes_list.append(None)
+
+                if finding or compliance or photos:
                     major_table.append(
                         {
                             "finding": finding,
-                            "Compliance": tools_val,
-                            "photo": photo,
-                            "photo_bytes": photo_bytes,
+                            "Compliance": compliance,
+                            "photos": photos,
+                            "photo_bytes_list": photo_bytes_list,
+                            "annotated_photo_bytes_list": annotated_bytes_list,
                         }
                     )
 
@@ -219,6 +311,7 @@ def _merge_to_final() -> List[Dict[str, Any]]:
             ov_item["title"] = _s(blk.get("obs_title")) or _s(ov_item.get("title"))
             ov_item["major_table"] = major_table
             ov_item["recommendations"] = recs
+            ov_item["audio_url"] = _s(blk.get("audio_url"))
             ov[oi] = ov_item
 
         comp["observations_valid"] = ov
@@ -226,6 +319,190 @@ def _merge_to_final() -> List[Dict[str, Any]]:
 
     st.session_state[SS_FINAL] = final
     return final
+
+
+# =============================================================================
+# Photo Picker + Annotator UI
+# =============================================================================
+def _render_photo_picker_and_preview(
+    *,
+    urls: List[str],
+    labels: Dict[str, str],
+    rr: Dict[str, Any],
+    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+    locked: bool,
+    scope_key: str,
+) -> Dict[str, Any]:
+    """
+    Behavior:
+    - If no photo selected yet => show ALL photos (grid) with Select buttons
+    - If 1+ selected => hide others and show only selected (with Remove)
+    - User can toggle "Show all photos" to re-open the full list
+    - Each selected photo has optional annotation (pen/shapes)
+    """
+    rr = _ensure_finding_row(rr)
+
+    # Ensure list
+    photos: List[str] = rr.get("photos") if isinstance(rr.get("photos"), list) else []
+    photos = [_s(x) for x in photos if _s(x)]
+    rr["photos"] = photos
+
+    show_all_default = True if not photos else bool(rr.get("_show_all_photos", False))
+    rr["_show_all_photos"] = show_all_default
+
+    # Toggle
+    tcol1, tcol2 = st.columns([1, 1], gap="small")
+    with tcol1:
+        rr["_show_all_photos"] = st.toggle(
+            "Show all photos",
+            value=rr["_show_all_photos"],
+            disabled=locked,
+            key=_key("show_all", scope_key),
+        )
+    with tcol2:
+        if photos:
+            st.caption(f"Selected: {len(photos)}")
+
+    show_all = rr["_show_all_photos"] or (len(photos) == 0)
+
+    # --- helper: render a single tile
+    def render_tile(purl: str, *, selected: bool) -> None:
+        bts = _cache_photo_bytes(purl, fetch_image=fetch_image)
+        st.markdown('<div class="t6-photo-card">', unsafe_allow_html=True)
+        if bts:
+            st.image(bts, use_container_width=True)
+        else:
+            st.caption("Image download failed.")
+            st.write(labels.get(purl, purl))
+        st.markdown("</div>", unsafe_allow_html=True)
+
+        if selected:
+            if st.button("Remove", disabled=locked, key=_key("rm_photo", scope_key, purl), use_container_width=True):
+                rr["photos"] = [x for x in rr["photos"] if x != purl]
+                # if empty after remove -> show all again
+                if not rr["photos"]:
+                    rr["_show_all_photos"] = True
+        else:
+            if st.button("Select", disabled=locked, key=_key("sel_photo", scope_key, purl), use_container_width=True):
+                if purl not in rr["photos"]:
+                    rr["photos"].append(purl)
+                # after select -> hide others
+                rr["_show_all_photos"] = False
+
+    # --- grid render
+    if show_all:
+        st.markdown("**Photos (choose one or more)**")
+        st.markdown('<div class="t6-photo-grid">', unsafe_allow_html=True)
+        # We render using columns trick; Streamlit can't place arbitrary HTML children reliably,
+        # so we simulate grid with columns per row.
+        # But CSS still helps with image sizing consistency.
+        # We'll do a simple responsive pattern: 4 cols desktop, 3 medium, 2 small (manual).
+        # Streamlit doesn't give viewport, so we use 3 columns default and it wraps on mobile.
+        cols = st.columns(3, gap="small")
+        for i, purl in enumerate(urls):
+            with cols[i % 3]:
+                render_tile(purl, selected=(purl in rr["photos"]))
+        st.markdown("</div>", unsafe_allow_html=True)
+    else:
+        st.markdown("**Selected photos**")
+        cols = st.columns(3, gap="small")
+        for i, purl in enumerate(rr["photos"]):
+            with cols[i % 3]:
+                render_tile(purl, selected=True)
+
+    # Backward compatible single photo field (keep first)
+    rr["photo"] = rr["photos"][0] if rr["photos"] else ""
+
+    # --- Annotation section (optional)
+    if rr["photos"]:
+        st.markdown("**Annotate selected photos (optional)**")
+        try:
+            from streamlit_drawable_canvas import st_canvas  # type: ignore
+            canvas_ok = True
+        except Exception:
+            canvas_ok = False
+
+        rr.setdefault("photo_markups", {})  # {url: payload}
+
+        for purl in rr["photos"]:
+            with st.expander(f"✍️ Annotate: {labels.get(purl, purl)}", expanded=False):
+                bts = _cache_photo_bytes(purl, fetch_image=fetch_image)
+                if not bts:
+                    st.caption("Cannot annotate because the image could not be downloaded.")
+                    continue
+
+                if not canvas_ok:
+                    st.info("Annotation tool is not available on this deployment (missing streamlit-drawable-canvas).")
+                    st.image(bts, use_container_width=True)
+                    continue
+
+                # Controls
+                a1, a2, a3 = st.columns([1, 1, 1], gap="small")
+                with a1:
+                    tool = st.selectbox(
+                        "Tool",
+                        options=["freedraw", "rect", "circle", "line"],
+                        index=0,
+                        disabled=locked,
+                        key=_key("ann_tool", scope_key, purl),
+                    )
+                with a2:
+                    stroke_width = st.slider(
+                        "Stroke",
+                        min_value=1,
+                        max_value=12,
+                        value=3,
+                        disabled=locked,
+                        key=_key("ann_stroke", scope_key, purl),
+                    )
+                with a3:
+                    fill = st.toggle(
+                        "Fill shapes",
+                        value=False,
+                        disabled=locked,
+                        key=_key("ann_fill", scope_key, purl),
+                    )
+
+                # Canvas
+                # NOTE: We do not force a color (your requirement was mainly size/UX).
+                # st_canvas needs background_image as PIL Image. We'll convert bytes to PIL safely.
+                from PIL import Image
+                import io
+
+                bg = Image.open(io.BytesIO(bts)).convert("RGBA")
+
+                canvas = st_canvas(
+                    fill_color="rgba(255, 0, 0, 0.15)" if fill else "rgba(0, 0, 0, 0)",
+                    stroke_width=stroke_width,
+                    stroke_color="#FF0000",
+                    background_image=bg,
+                    update_streamlit=True,
+                    height=min(520, max(280, int(bg.height * (520 / max(bg.width, 1))))),
+                    width=520,
+                    drawing_mode=tool,
+                    key=_key("ann_canvas", scope_key, purl),
+                )
+
+                # Save markup payload + rendered image
+                if canvas and canvas.json_data:
+                    payload = canvas.json_data
+                    rr["photo_markups"][purl] = payload
+
+                    # Render final annotated PNG bytes
+                    try:
+                        # canvas.image_data is RGBA numpy array
+                        import numpy as np  # type: ignore
+                        img_arr = canvas.image_data
+                        if img_arr is not None and isinstance(img_arr, np.ndarray):
+                            out_img = Image.fromarray(img_arr.astype("uint8"), mode="RGBA")
+                            out_buf = io.BytesIO()
+                            out_img.save(out_buf, format="PNG")
+                            _save_annotated_png_bytes(purl, payload, out_buf.getvalue())
+                            st.caption("✅ Annotation saved (will be used in report).")
+                    except Exception:
+                        st.caption("Saved markup, but could not render annotated PNG on this environment.")
+
+    return rr
 
 
 # =============================================================================
@@ -238,6 +515,7 @@ def render_step(
     fetch_audio: Optional[Callable[[str], Tuple[bool, Optional[bytes], str, str]]] = None,
 ) -> bool:
     _ensure_state()
+    _inject_gallery_css()
 
     obs = st.session_state.get(SS_OBS, []) or []
     if not obs:
@@ -303,6 +581,24 @@ def render_step(
 
         tools_opts = ["", "Yes", "No", "N/A"]
 
+        # --- GLOBAL AUDIO PLAYER SECTION (Audio only)
+        if audio_urls:
+            st.markdown("### 🎧 Audios")
+            st.caption("Play audios here, then write findings while listening.")
+            for u in audio_urls:
+                with st.container(border=True):
+                    st.markdown(f"**{audio_label.get(u, u)}**")
+                    if fetch_audio is not None:
+                        ok, b, _msg, mime = fetch_audio(u)
+                        if ok and b:
+                            st.audio(b, format=(mime or "audio/aac").split(";")[0])
+                        else:
+                            st.audio(u)
+                    else:
+                        st.audio(u)
+
+            st.divider()
+
         # Render components
         for comp_i, comp3 in enumerate(obs):
             comp_title = _s(comp3.get("title")) or f"Component {comp_i + 1}"
@@ -350,32 +646,19 @@ def render_step(
                     st.markdown("---")
                     st.markdown(f"### {_obs_number(comp_i, obs_i)} — {blk['obs_title']}")
 
-                    # Audio (optional)
+                    # Per-observation audio link (Audio only)
                     if audio_urls:
-                        a1, a2 = st.columns([2, 1], gap="small")
-                        with a1:
-                            cur = _s(blk.get("audio_url"))
-                            opts = [""] + audio_urls
-                            idx = opts.index(cur) if cur in opts else 0
-                            blk["audio_url"] = st.selectbox(
-                                "Audio (optional)",
-                                options=opts,
-                                index=idx,
-                                format_func=lambda u: "None" if not u else audio_label.get(u, u),
-                                key=_key("audio", comp_i, obs_i),
-                                disabled=locked,
-                            )
-                        with a2:
-                            st.caption("Play")
-                            if blk["audio_url"]:
-                                if fetch_audio is not None:
-                                    ok, b, _msg, mime = fetch_audio(blk["audio_url"])
-                                    if ok and b:
-                                        st.audio(b, format=(mime or "audio/aac").split(";")[0])
-                                    else:
-                                        st.audio(blk["audio_url"])
-                                else:
-                                    st.audio(blk["audio_url"])
+                        cur = _s(blk.get("audio_url"))
+                        opts = [""] + audio_urls
+                        idx = opts.index(cur) if cur in opts else 0
+                        blk["audio_url"] = st.selectbox(
+                            "Attach audio to this observation (optional)",
+                            options=opts,
+                            index=idx,
+                            format_func=lambda u: "None" if not u else audio_label.get(u, u),
+                            key=_key("audio_attach", comp_i, obs_i),
+                            disabled=locked,
+                        )
 
                     st.markdown("**Major findings (table rows)**")
 
@@ -404,7 +687,7 @@ def render_step(
                     for r_idx, rr in enumerate(rows):
                         rr = _ensure_finding_row(rr)
 
-                        c1, c2, c3 = st.columns([2.2, 1.0, 1.6], gap="small")
+                        c1, c2 = st.columns([2.2, 1.0], gap="small")
                         with c1:
                             rr["finding"] = st.text_area(
                                 f"Finding #{r_idx + 1}",
@@ -423,27 +706,17 @@ def render_step(
                                 key=_key("Compliance", comp_i, obs_i, r_idx),
                                 disabled=locked,
                             )
-                        with c3:
-                            prev_photo = _s(rr.get("photo"))
-                            opts = [""] + urls
-                            idx = opts.index(prev_photo) if prev_photo in opts else 0
-                            rr["photo"] = st.selectbox(
-                                "Photo",
-                                options=opts,
-                                index=idx,
-                                format_func=lambda u: "—" if u == "" else labels.get(u, u),
-                                key=_key("photo", comp_i, obs_i, r_idx),
-                                disabled=locked,
-                            )
 
-                        # Preview + cache bytes (only if photo selected)
-                        photo_url = _s(rr.get("photo"))
-                        if photo_url:
-                            bts = _cache_photo_bytes(photo_url, fetch_image=fetch_image)
-                            if bts:
-                                st.image(bts, width=260)
-                            else:
-                                st.caption("Image download failed. Please verify access/URL.")
+                        # --- Photos only section for this finding row
+                        st.markdown("**Photos**")
+                        rr = _render_photo_picker_and_preview(
+                            urls=urls,
+                            labels=labels,
+                            rr=rr,
+                            fetch_image=fetch_image,
+                            locked=locked,
+                            scope_key=f"c{comp_i}.o{obs_i}.r{r_idx}",
+                        )
 
                         new_rows.append(rr)
 
