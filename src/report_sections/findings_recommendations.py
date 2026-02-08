@@ -26,7 +26,7 @@ COL_PHOTO = 3.40
 # Word uses eighths of a point for w:sz:
 # 0.25pt * 8 = 2
 # -------------------------------------------------
-BORDER_SZ_EIGHTHS = "2"  # ✅ 1/4pt
+BORDER_SZ_EIGHTHS = "1"  # ✅ 1/4pt
 
 
 # -------------------------------------------------
@@ -267,3 +267,4 @@ def add_findings_recommendations_page(
                     _compact(rp)
 
             _one_line_gap(doc)
+
