@@ -6,7 +6,7 @@ from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps
 
 from src.Tools.utils.types import Tool6Context
 from design.components.base_tool_ui import card_open, card_close, status_card
@@ -26,8 +26,23 @@ SS_LAST_ADDED_COMP = "tool6_last_added_component_idx"
 # Google Sheet (Audio source) — USER PROVIDED
 # =============================================================================
 AUDIO_SHEET_ID = "1XxWP-d3lIV4vSxjp-8fo-u9JW0QvsOBjbFkl2mQqApc"
-AUDIO_SHEET_GID = 1945665091          # gid=1945665091
-AUDIO_TPM_COL_NAME = "TPM_ID"          # must exist in header
+AUDIO_SHEET_GID = 1945665091
+AUDIO_TPM_COL_NAME = "TPM_ID"
+
+
+# =============================================================================
+# UI / Performance constants
+# =============================================================================
+# ✅ ثابت و یکسان برای همه preview ها (مرتب + سریع)
+THUMB_W = 360
+THUMB_H = 240
+THUMB_SIZE = (THUMB_W, THUMB_H)
+
+# ✅ روی همه دستگاه‌ها خوب و ساده: 2 ستون (هم مرتب، هم سریع)
+GRID_COLS_DEFAULT = 2
+
+# ✅ تعداد آیتم در هر صفحه (روی موبایل هم سبک)
+GRID_PER_PAGE_DEFAULT = 16
 
 
 # =============================================================================
@@ -94,7 +109,7 @@ def _ensure_obs_schema(it: Dict[str, Any]) -> Dict[str, Any]:
     it.setdefault("title_custom", "")
     it.setdefault("audio_url", "")
     it.setdefault("photos", [])  # [{"url":..., "text":...}]
-    it.setdefault("photo_picker_locked", False)  # hide others only after Done selecting
+    it.setdefault("photo_picker_locked", False)  # ✅ hide others only after Done selecting
     return it
 
 
@@ -204,7 +219,6 @@ def _looks_like_image_url(url: str, label: str = "") -> bool:
     if _IMG_EXT_RE.search(low_u):
         return True
 
-    # image-host patterns (no extension)
     if "googleusercontent.com" in low_u or "lh3.googleusercontent.com" in low_u:
         return True
     if "photo" in low_l or "image" in low_l or "picture" in low_l:
@@ -232,9 +246,10 @@ def _filter_photo_urls(urls: List[str], labels: Dict[str, str]) -> List[str]:
 
 
 # =============================================================================
-# ✅ Audio: Google Sheet lookup by TPM_ID and scan row for audio links
+# Audio: Google Sheet lookup by TPM_ID and scan row for audio links
 # =============================================================================
 _AUD_URL_RE = re.compile(r"\.(mp3|wav|m4a|aac|ogg|opus|flac)(\?|#|$)", re.IGNORECASE)
+
 
 def _looks_like_audio_url(url: str) -> bool:
     u = _s(url)
@@ -242,15 +257,12 @@ def _looks_like_audio_url(url: str) -> bool:
         return False
     low = u.lower()
 
-    # extension works with ?uuid=...
     if _AUD_URL_RE.search(low):
         return True
 
-    # SurveyCTO attachment pattern
     if "submission-attachment" in low and ("aac" in low or "m4a" in low or "mp3" in low or "wav" in low):
         return True
 
-    # generic hints
     if "audio" in low or "voice" in low or "record" in low:
         return True
 
@@ -259,8 +271,10 @@ def _looks_like_audio_url(url: str) -> bool:
 
 def _get_google_sheets_service():
     """
-    Standard Streamlit pattern:
-      st.secrets["gcp_service_account"] must exist (dict JSON of service account).
+    Requires:
+      - st.secrets["gcp_service_account"] = service account JSON dict
+      - installed packages:
+          google-api-python-client google-auth google-auth-httplib2 google-auth-oauthlib
     """
     try:
         from google.oauth2 import service_account
@@ -302,12 +316,10 @@ def _read_sheet_values(spreadsheet_id: str, sheet_title: str) -> List[List[str]]
     if svc is None:
         return []
 
-    # Big safe range; Google API will return only used cells
     rng = f"'{sheet_title}'!A1:ZZ5000"
     try:
         resp = svc.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=rng).execute()
         vals = resp.get("values") or []
-        # normalize to strings
         out: List[List[str]] = []
         for row in vals:
             out.append([_s(x) for x in (row or [])])
@@ -317,13 +329,6 @@ def _read_sheet_values(spreadsheet_id: str, sheet_title: str) -> List[List[str]]
 
 
 def _discover_audio_from_google_sheet_by_tpm_id(tpm_id: str) -> Tuple[List[str], Dict[str, str]]:
-    """
-    ✅ MUST:
-      - find row by TPM_ID
-      - scan all cells in that row
-      - where cell contains audio URL => include
-      - label = column header
-    """
     tpm_id = _s(tpm_id)
     if not tpm_id:
         return [], {}
@@ -337,19 +342,16 @@ def _discover_audio_from_google_sheet_by_tpm_id(tpm_id: str) -> Tuple[List[str],
         return [], {}
 
     header = values[0]
-    # find TPM_ID col
     try:
         tpm_col_idx = next(i for i, h in enumerate(header) if _s(h).strip().upper() == AUDIO_TPM_COL_NAME.upper())
     except StopIteration:
         return [], {}
 
-    # find matching row
     target_row: Optional[List[str]] = None
     for r in values[1:]:
         if tpm_col_idx < len(r) and _s(r[tpm_col_idx]) == tpm_id:
             target_row = r
             break
-
     if not target_row:
         return [], {}
 
@@ -372,17 +374,12 @@ def _discover_audio_from_google_sheet_by_tpm_id(tpm_id: str) -> Tuple[List[str],
 
 
 def _discover_audio(ctx: Tool6Context) -> Tuple[List[str], Dict[str, str], str]:
-    """
-    Returns (urls, labels, source_msg)
-    Prefer Google Sheet strict; fallback to ctx.audios if sheet not configured.
-    """
     tpm_id = _s(getattr(ctx, "tpm_id", ""))
 
     sheet_urls, sheet_labels = _discover_audio_from_google_sheet_by_tpm_id(tpm_id)
     if sheet_urls:
         return sheet_urls, sheet_labels, "Audio loaded from Google Sheet (TPM_ID row)."
 
-    # Fallback (TPM-scope if ctx is per-record)
     audios = getattr(ctx, "audios", None)
     if isinstance(audios, list) and audios:
         urls: List[str] = []
@@ -398,26 +395,23 @@ def _discover_audio(ctx: Tool6Context) -> Tuple[List[str], Dict[str, str], str]:
         if urls:
             return urls, label_by_url, "Audio loaded from ctx.audios (fallback)."
 
-    # Explain why missing
     if _get_google_sheets_service() is None:
         return [], {}, "Audio not shown: Google Sheets credentials not found in st.secrets['gcp_service_account']."
     return [], {}, "No audio links found for this TPM_ID row."
 
 
 # =============================================================================
-# Media caching + thumbnails
+# Media caching + thumbnails (✅ fixed-size thumbnails)
 # =============================================================================
-def _make_thumbnail(img_bytes: bytes, *, max_w: int = 420) -> Optional[bytes]:
+def _make_thumbnail_fixed(img_bytes: bytes, *, size: Tuple[int, int] = THUMB_SIZE) -> Optional[bytes]:
+    """
+    ✅ Always returns SAME size (W x H), center-cropped (clean + consistent grid).
+    """
     try:
         img = Image.open(BytesIO(img_bytes)).convert("RGB")
-        w, h = img.size
-        if w <= 0 or h <= 0:
-            return None
-        if w > max_w:
-            new_h = int(h * (max_w / float(w)))
-            img = img.resize((max_w, max(1, new_h)))
+        thumb = ImageOps.fit(img, size, method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
         out = BytesIO()
-        img.save(out, format="JPEG", quality=72, optimize=True)
+        thumb.save(out, format="JPEG", quality=72, optimize=True)
         return out.getvalue()
     except Exception:
         return None
@@ -436,9 +430,10 @@ def _fetch_and_cache_image(
     photo_bytes: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
     thumbs: Dict[str, bytes] = ss.get(SS_PHOTO_THUMBS, {}) or {}
 
+    # If bytes already exist, ensure thumb exists
     if url in photo_bytes and photo_bytes[url]:
         if url not in thumbs:
-            th = _make_thumbnail(photo_bytes[url])
+            th = _make_thumbnail_fixed(photo_bytes[url])
             if th:
                 thumbs[url] = th
                 ss[SS_PHOTO_THUMBS] = thumbs
@@ -449,7 +444,7 @@ def _fetch_and_cache_image(
         photo_bytes[url] = b
         ss[SS_PHOTO_BYTES] = photo_bytes
 
-        th = _make_thumbnail(b)
+        th = _make_thumbnail_fixed(b)
         if th:
             thumbs[url] = th
             ss[SS_PHOTO_THUMBS] = thumbs
@@ -505,10 +500,7 @@ def _photo_picker_grid_fast(
         label_visibility="collapsed",
     ).strip().lower()
 
-    if q:
-        filtered = [u for u in all_urls if q in _label(u).lower()]
-    else:
-        filtered = all_urls
+    filtered = [u for u in all_urls if (q in _label(u).lower())] if q else all_urls
 
     if not filtered:
         st.info("No photos match your search.")
@@ -543,17 +535,19 @@ def _photo_picker_grid_fast(
 
     thumbs: Dict[str, bytes] = st.session_state.get(SS_PHOTO_THUMBS, {}) or {}
 
-    rows = [chunk[i : i + cols] for i in range(0, len(chunk), cols)]
+    rows = [chunk[i: i + cols] for i in range(0, len(chunk), cols)]
     for r in rows:
         grid = st.columns(cols, gap="small")
         for i, u in enumerate(r):
             with grid[i]:
+                # ✅ only fetch thumbs for currently visible chunk
                 if u not in thumbs:
                     _fetch_and_cache_image(u, fetch_image=fetch_image)
                     thumbs = st.session_state.get(SS_PHOTO_THUMBS, {}) or {}
 
                 bts = thumbs.get(u)
                 if bts:
+                    # ✅ fixed-size thumbs => consistent layout everywhere
                     st.image(bts, use_container_width=True)
                 else:
                     st.caption("Preview not available")
@@ -570,15 +564,32 @@ def _photo_picker_grid_fast(
     return ordered
 
 
-def _selected_photos_only_view(selected_urls: List[str], labels: Dict[str, str]) -> None:
+def _render_selected_only_grid(
+    *,
+    selected_urls: List[str],
+    labels: Dict[str, str],
+    cols: int,
+) -> None:
     """
-    ✅ After Done selecting, show ONLY selected items (no other photos).
+    ✅ After Done selecting: show ONLY selected photos as a clean grid (fast).
     """
     if not selected_urls:
         return
+
+    thumbs: Dict[str, bytes] = st.session_state.get(SS_PHOTO_THUMBS, {}) or {}
+    rows = [selected_urls[i: i + cols] for i in range(0, len(selected_urls), cols)]
+
     st.markdown("**Selected photos (only)**")
-    chips = [labels.get(u, u) for u in selected_urls]
-    st.caption(" • ".join(chips[:16]) + (" ..." if len(chips) > 16 else ""))
+    for r in rows:
+        grid = st.columns(cols, gap="small")
+        for i, u in enumerate(r):
+            with grid[i]:
+                tb = thumbs.get(u)
+                if tb:
+                    st.image(tb, use_container_width=True)
+                else:
+                    st.caption("Preview not available")
+                st.caption(_s(labels.get(u, u)))
 
 
 # =============================================================================
@@ -611,9 +622,7 @@ def _build_valid_observations_global(
         for p in (it.get("photos") or []):
             if isinstance(p, dict) and _s(p.get("url")):
                 u = _s(p.get("url"))
-                photos_fixed.append(
-                    {"url": u, "text": _s(p.get("text")), "bytes": photo_bytes_cache.get(u)}
-                )
+                photos_fixed.append({"url": u, "text": _s(p.get("text")), "bytes": photo_bytes_cache.get(u)})
 
         valid.append(
             {
@@ -645,7 +654,6 @@ def render_step(
     photo_labels = getattr(ctx, "photo_label_by_url", {}) or {}
     photo_urls = _filter_photo_urls(raw_photo_urls, photo_labels)
 
-    # ✅ Audio from Google Sheet TPM_ID row
     audio_url_list, audio_label_by_url, audio_source_msg = _discover_audio(ctx)
 
     with st.container(border=True):
@@ -657,6 +665,7 @@ def render_step(
 
         comps: List[Dict[str, Any]] = st.session_state[SS_OBS]
 
+        # keep simple: always preview picker on (fast & clean)
         show_photo_picker = st.toggle("Pick photos with preview", value=True, key=_k("show_picker"))
 
         if st.button("Clear all", use_container_width=True, key=_k("clear_all")):
@@ -726,7 +735,7 @@ def render_step(
                                 disabled=(len(observations) <= 1),
                             )
 
-                        # ✅ Audio (strict: from Sheet TPM_ID row)
+                        # Audio
                         if audio_url_list:
                             st.caption(audio_source_msg)
                             a1, a2 = st.columns([2, 1], gap="small")
@@ -794,48 +803,59 @@ def render_step(
 
                                 locked = bool(it.get("photo_picker_locked")) and bool(prev_selected)
 
-                                if show_photo_picker:
-                                    if locked:
-                                        # ✅ After Done selecting: SHOW ONLY selected, nothing else.
-                                        _selected_photos_only_view(prev_selected, photo_labels)
+                                # ✅ LOCKED => show ONLY selected, and DO NOT render picker (fast)
+                                if show_photo_picker and locked:
+                                    # Ensure thumbs exist for selected only (fast)
+                                    for u in prev_selected:
+                                        _fetch_and_cache_image(u, fetch_image=fetch_image)
 
-                                        cA, cB = st.columns([0.55, 0.45], gap="small")
-                                        with cA:
-                                            st.caption("Only selected photos are shown.")
-                                        with cB:
-                                            if st.button("Change selection", use_container_width=True, key=_k("chg_sel", ci, oi)):
-                                                it["photo_picker_locked"] = False
-                                                locked = False
+                                    _render_selected_only_grid(
+                                        selected_urls=prev_selected,
+                                        labels=photo_labels,
+                                        cols=GRID_COLS_DEFAULT,
+                                    )
 
-                                        selected_urls = prev_selected
-                                    else:
+                                    cA, cB = st.columns([0.55, 0.45], gap="small")
+                                    with cA:
+                                        st.caption("Only selected photos are shown.")
+                                    with cB:
+                                        if st.button("Change selection", use_container_width=True, key=_k("chg_sel", ci, oi)):
+                                            it["photo_picker_locked"] = False
+                                            locked = False
+
+                                    selected_urls = prev_selected
+
+                                else:
+                                    # Not locked => show picker
+                                    if show_photo_picker:
                                         st.markdown("**Pick photos (preview before selecting)**")
                                         selected_urls = _photo_picker_grid_fast(
                                             all_urls=photo_urls,
                                             labels=photo_labels,
                                             selected_urls=prev_selected,
                                             fetch_image=fetch_image,
-                                            cols=2,       # mobile-friendly
-                                            per_page=16,  # speed
+                                            cols=GRID_COLS_DEFAULT,
+                                            per_page=GRID_PER_PAGE_DEFAULT,
                                             key_prefix=_k("grid", ci, oi),
                                         )
 
                                         if selected_urls:
                                             if st.button("✅ Done selecting", use_container_width=True, key=_k("done_sel", ci, oi)):
                                                 it["photo_picker_locked"] = True
-                                else:
-                                    selected_urls = st.multiselect(
-                                        "Select photos for this observation",
-                                        options=photo_urls,
-                                        default=prev_selected,
-                                        format_func=lambda u: photo_labels.get(u, u),
-                                        key=_k("obs_photos", ci, oi),
-                                    )
-                                    if selected_urls:
-                                        if st.button("✅ Done selecting", use_container_width=True, key=_k("done_sel_ms", ci, oi)):
-                                            it["photo_picker_locked"] = True
+                                                # Streamlit rerun => instantly hides other photos next render
+                                    else:
+                                        selected_urls = st.multiselect(
+                                            "Select photos for this observation",
+                                            options=photo_urls,
+                                            default=prev_selected,
+                                            format_func=lambda u: photo_labels.get(u, u),
+                                            key=_k("obs_photos", ci, oi),
+                                        )
+                                        if selected_urls:
+                                            if st.button("✅ Done selecting", use_container_width=True, key=_k("done_sel_ms", ci, oi)):
+                                                it["photo_picker_locked"] = True
 
-                            # cache selected (fast thumbs)
+                            # Cache selected thumbs only
                             for u in selected_urls:
                                 _fetch_and_cache_image(u, fetch_image=fetch_image)
 
@@ -854,6 +874,7 @@ def render_step(
                                         st.caption(lab)
                                         tb = thumbs.get(u)
                                         if tb:
+                                            # ✅ fixed thumbs => consistent box size everywhere
                                             st.image(tb, use_container_width=True)
                                         else:
                                             st.caption("Preview not available.")
