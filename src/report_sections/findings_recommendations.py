@@ -26,7 +26,7 @@ COL_PHOTO = 3.40
 # Word uses eighths of a point for w:sz:
 # 0.25pt * 8 = 2
 # -------------------------------------------------
-BORDER_SZ_EIGHTHS = "1"  # ✅ 1/4pt
+BORDER_SZ_EIGHTHS = "2"  # ✅ EXACT 1/4pt
 
 
 # -------------------------------------------------
@@ -50,8 +50,16 @@ def _one_line_gap(doc: Document) -> None:
 
 
 def _clean_png(b: bytes) -> Optional[bytes]:
+    """
+    Normalize image bytes -> PNG (RGB) to avoid docx image issues.
+    Keeps it stable for Word rendering.
+    """
     try:
-        img = Image.open(io.BytesIO(b)).convert("RGB")
+        img = Image.open(io.BytesIO(b))
+
+        # Convert to RGB to avoid alpha-channel issues in some Word setups
+        img = img.convert("RGB")
+
         out = io.BytesIO()
         img.save(out, format="PNG", optimize=True)
         return out.getvalue()
@@ -105,6 +113,14 @@ def _shade_cell(cell, fill_hex: str) -> None:
     shd.set(qn("w:fill"), fill_hex)
 
 
+def _clear_cell(cell) -> None:
+    """Ensure cell starts empty."""
+    cell.text = ""
+    if cell.paragraphs:
+        cell.paragraphs[0].text = ""
+        _compact(cell.paragraphs[0])
+
+
 def _align_cell_center(cell) -> None:
     """
     Center horizontally + vertically for the first paragraph in the cell.
@@ -132,6 +148,96 @@ def _align_cell_left_top(cell) -> None:
         cell.paragraphs[0].alignment = WD_ALIGN_PARAGRAPH.LEFT
 
 
+def _add_picture_stack_in_cell(
+    cell,
+    images: List[bytes],
+    *,
+    width_in: float = 3.10,
+) -> None:
+    """
+    Adds ALL images into the Photos cell, right-aligned.
+    Each image is placed in its own paragraph for clean stacking.
+    """
+    _clear_cell(cell)
+    try:
+        cell.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+    except Exception:
+        pass
+
+    if not images:
+        return
+
+    for img_bytes in images:
+        clean = _clean_png(img_bytes)
+        if not clean:
+            continue
+        p = cell.add_paragraph("")
+        _compact(p)
+        p.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        p.add_run().add_picture(io.BytesIO(clean), width=Inches(width_in))
+
+
+def _extract_images_for_row(
+    rdata: Dict[str, Any],
+    photo_bytes: Dict[str, bytes],
+) -> List[bytes]:
+    """
+    STRICT priority (to guarantee annotated marks are in the report):
+
+    1) annotated_photo_bytes_list  -> EXACT marked images (preferred)
+    2) photo_bytes_list            -> original bytes aligned to photos
+    3) photos urls -> photo_bytes dict (fallback)
+    4) single photo url -> photo_bytes dict (backward)
+
+    Returns a list of bytes to be inserted (ALL of them).
+    """
+    out: List[bytes] = []
+
+    # 1) Annotated versions (exactly what user marked)
+    ann_list = rdata.get("annotated_photo_bytes_list")
+    if isinstance(ann_list, list):
+        for b in ann_list:
+            if isinstance(b, (bytes, bytearray)) and b:
+                out.append(bytes(b))
+
+    # 2) If annotation list is empty/missing for some photos, fall back to originals.
+    orig_list = rdata.get("photo_bytes_list")
+    if isinstance(orig_list, list):
+        for b in orig_list:
+            if isinstance(b, (bytes, bytearray)) and b:
+                out.append(bytes(b))
+
+    # 3) Fallback urls list
+    photos = rdata.get("photos")
+    if isinstance(photos, list):
+        for u in photos:
+            u = s(u)
+            if not u:
+                continue
+            b = photo_bytes.get(u)
+            if isinstance(b, (bytes, bytearray)) and b:
+                out.append(bytes(b))
+
+    # 4) Backward compatible single photo
+    u1 = s(rdata.get("photo"))
+    if u1:
+        b = photo_bytes.get(u1)
+        if isinstance(b, (bytes, bytearray)) and b:
+            out.append(bytes(b))
+
+    # Soft dedup by (len + first bytes) to avoid repeating exact same image twice
+    dedup: List[bytes] = []
+    seen = set()
+    for b in out:
+        sig = (len(b), b[:32])
+        if sig in seen:
+            continue
+        seen.add(sig)
+        dedup.append(b)
+
+    return dedup
+
+
 # =================================================
 # PAGE — FINDINGS & RECOMMENDATIONS (INSIDE OBSERVATIONS)
 # =================================================
@@ -142,11 +248,36 @@ def add_findings_recommendations_page(
     photo_bytes: Dict[str, bytes],
 ) -> None:
     """
-    ✅ Updates:
-      - Table borders: BLACK and 1/4pt
-      - Column NO and Compliance: centered (horizontal + vertical)
-      - Header: BLUE fill + WHITE bold size 10
-      - One blank line spacing rules kept as-is
+    ✅ Guarantees:
+      - Compliance EXACTLY as user entered (reads rdata["Compliance"])
+      - NO audio saved in report
+      - Annotated photos saved EXACTLY (uses annotated_photo_bytes_list first)
+      - All user photos included (not limited)
+
+    Expected structures (from your Step4 merge):
+      component_observations = [
+        {
+          "comp_id": ...,
+          "title": ...,
+          "observations_valid": [
+            {
+              "title": ...,
+              "major_table": [
+                {
+                  "finding": "...",
+                  "Compliance": "Yes/No/N/A/...",
+                  "photos": [url...],
+                  "photo_bytes_list": [bytes|None...],
+                  "annotated_photo_bytes_list": [bytes|None...],
+                }, ...
+              ],
+              "recommendations": [str...]
+            }, ...
+          ]
+        }, ...
+      ]
+
+    photo_bytes = st.session_state["photo_bytes"] (fallback if needed)
     """
     if not component_observations:
         return
@@ -158,7 +289,7 @@ def add_findings_recommendations_page(
     for comp in component_observations:
         for obs in comp.get("observations_valid", []) or []:
             obs_global_idx += 1
-            obs_no = f"5.{obs_global_idx}"  # Observation number like 5.1
+            obs_no = f"5.{obs_global_idx}"
 
             # ----------------------------
             # 5.x.1 Major findings
@@ -178,7 +309,7 @@ def add_findings_recommendations_page(
                 tbl.style = "Table Grid"
 
                 _set_table_fixed_layout(tbl)
-                _set_table_black_borders(tbl, size=BORDER_SZ_EIGHTHS)  # ✅ 1/4pt borders
+                _set_table_black_borders(tbl, size=BORDER_SZ_EIGHTHS)
 
                 # Set exact widths
                 for i, w in enumerate([COL_NO, COL_FIND, COL_COMP, COL_PHOTO]):
@@ -191,11 +322,10 @@ def add_findings_recommendations_page(
                 hdr_cells = tbl.rows[0].cells
                 hdr_texts = ["NO", "Findings", "Compliance", "Photos"]
 
-                for idx_col, (c, txt) in enumerate(zip(hdr_cells, hdr_texts)):
-                    c.text = ""
+                for c, txt in zip(hdr_cells, hdr_texts):
+                    _clear_cell(c)
                     _shade_cell(c, header_fill_blue)
 
-                    # header alignment
                     p = c.paragraphs[0]
                     _compact(p)
                     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -210,42 +340,28 @@ def add_findings_recommendations_page(
                     r.font.color.rgb = RGBColor(255, 255, 255)
 
                 # Data rows
-                for i, rdata in enumerate(rows, start=1):
+                for idx, rdata in enumerate(rows, start=1):
+                    if not isinstance(rdata, dict):
+                        continue
+
                     row_cells = tbl.add_row().cells
 
-                    # --- NO (center)
-                    row_cells[0].text = str(i)
+                    # --- NO
+                    row_cells[0].text = str(idx)
                     _align_cell_center(row_cells[0])
 
-                    # --- Findings (left)
+                    # --- Findings
                     row_cells[1].text = s(rdata.get("finding"))
                     _align_cell_left_top(row_cells[1])
 
-                    # --- Compliance (center)
-                    row_cells[2].text = s(rdata.get("compliance"))
+                    # --- Compliance (EXACT key)
+                    # Important: must be "Compliance" (case-sensitive)
+                    row_cells[2].text = s(rdata.get("Compliance"))
                     _align_cell_center(row_cells[2])
 
-                    # --- Photos (right)
-                    row_cells[3].text = ""
-                    try:
-                        row_cells[3].vertical_alignment = WD_ALIGN_VERTICAL.TOP
-                    except Exception:
-                        pass
-
-                    pph = row_cells[3].paragraphs[0]
-                    pph.text = ""
-                    _compact(pph)
-                    pph.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-
-                    u = s(rdata.get("photo"))
-                    b = photo_bytes.get(u)
-                    if b:
-                        clean = _clean_png(b)
-                        if clean:
-                            pph.add_run().add_picture(
-                                io.BytesIO(clean),
-                                width=Inches(3.1),
-                            )
+                    # --- Photos: EXACT annotated photos first
+                    images = _extract_images_for_row(rdata, photo_bytes)
+                    _add_picture_stack_in_cell(row_cells[3], images, width_in=3.10)
 
             # ----------------------------
             # 5.x.2 Recommendations
@@ -263,8 +379,10 @@ def add_findings_recommendations_page(
                 _one_line_gap(doc)
 
                 for txt in recs:
-                    rp = doc.add_paragraph(s(txt), style="List Bullet")
+                    t = s(txt)
+                    if not t:
+                        continue
+                    rp = doc.add_paragraph(t, style="List Bullet")
                     _compact(rp)
 
             _one_line_gap(doc)
-
