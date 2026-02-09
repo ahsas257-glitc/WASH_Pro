@@ -555,15 +555,7 @@ def render_step(ctx: Tool6Context) -> bool:
             if not _s(ss.get(SS_RECO)):
                 ss[SS_RECO] = auto_reco
 
-    st.subheader("Step 9 — Conclusion")
-    st.caption("Auto-draft from findings + recommendations, edit quickly, translate in one click, approve to lock for DOCX.")
-
     with st.container(border=True):
-        card_open(
-            "Conclusion (Auto + Editable + Responsive + Translate)",
-            subtitle="Use Auto-fill to draft instantly. Approve to lock the final DOCX content.",
-            variant="lg-variant-cyan",
-        )
 
         # ---------------- Sticky action bar ----------------
         st.markdown('<div class="t6-s9-sticky">', unsafe_allow_html=True)
@@ -667,11 +659,8 @@ def render_step(ctx: Tool6Context) -> bool:
                 # status
                 if ss.get(SS_LOCK):
                     status_card("Approved", "This content is locked and will be used in DOCX.", level="success")
-                else:
-                    if ss.get(SS_DIRTY):
-                        status_card("Edited", "You changed the auto draft. Save and approve when final.", level="warning")
-                    else:
-                        status_card("Auto draft", "Matches current auto suggestions.", level="info")
+
+
 
             with right:
                 st.markdown("### Live preview (DOCX content)")
@@ -820,8 +809,6 @@ def render_step(ctx: Tool6Context) -> bool:
                     _commit_payload()
                     status_card("Approved", "Locked for DOCX output.", level="success")
 
-            with q3:
-                st.caption("Tip: Use Draft tab for editing + preview. Controls tab is for utilities and translation.")
 
         # Final validation hint
         final_txt = _split_paragraphs(_s(ss.get(SS_TXT)))
