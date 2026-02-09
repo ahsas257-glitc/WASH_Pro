@@ -53,17 +53,8 @@ def _key(field: str, suffix: str) -> str:
     return f"t6.s2.{_md5_10(field)}.{suffix}"
 
 
-def _is_mobile() -> bool:
-    # Best-effort: Streamlit doesn't expose true viewport reliably.
-    # We'll use layout that naturally stacks on small screens.
-    return False
-
-
 def _cols2(gap: str = "large"):
-    """
-    Responsive 2-column layout:
-    - On mobile Streamlit stacks automatically, so this still works well.
-    """
+    """2-column layout; Streamlit stacks automatically on small screens."""
     return st.columns([1, 1], gap=gap)
 
 
@@ -73,32 +64,34 @@ def _section_title(text: str) -> None:
 
 def _inject_css() -> None:
     """
-    Standard UI spacing & alignment across mobile/laptop/monitor.
-    Keeps things clean and consistent.
+    Clean, aligned layout: consistent widths, reduced blank gaps,
+    tighter captions, and better alignment across the whole step.
     """
     st.markdown(
         """
         <style>
-          /* Make all inputs take full width nicely */
+          /* Make widgets full-width consistently */
           div[data-testid="stTextInput"] input,
           div[data-testid="stTextArea"] textarea,
           div[data-testid="stNumberInput"] input,
-          div[data-testid="stSelectbox"] div,
+          div[data-testid="stSelectbox"] div[role="combobox"],
           div[data-testid="stDateInput"] input {
             width: 100% !important;
           }
 
-          /* Reduce random vertical gaps */
-          .block-container { padding-top: 1.2rem; }
-          [data-testid="stVerticalBlock"] { gap: 0.75rem; }
+          /* Reduce random vertical gaps in this page */
+          [data-testid="stVerticalBlock"] { gap: 0.70rem; }
 
-          /* Make captions more compact */
+          /* Captions tighter */
           .stCaption { margin-top: -6px; }
 
           /* Tabs spacing */
           button[data-baseweb="tab"] { padding: 8px 12px; }
 
-          /* On small screens, reduce container padding a bit */
+          /* Form submit area spacing */
+          div[data-testid="stForm"] { margin-top: 0.25rem; }
+
+          /* Small screens: less side padding */
           @media (max-width: 700px){
             .block-container { padding-left: 1rem; padding-right: 1rem; }
           }
@@ -290,8 +283,7 @@ def w_af_phone(field: str, ctx: Tool6Context) -> str:
     nine = _extract_af_9digits(cur)
 
     c1, c2 = st.columns([0.75, 2.25], gap="small")
-    with c1:
-        st.text_input("Code", value="+93", disabled=True, key=_key(field, "code"))
+
     with c2:
         entered = st.text_input(
             field,
@@ -375,7 +367,6 @@ def w_money(field: str, ctx: Tool6Context) -> str:
 
     amt_state[field] = float(amount)
     cur_state[field] = _s(cur) or "AFN"
-
     _show_hint(field, ctx)
 
     if amount and amount > 0:
@@ -392,128 +383,121 @@ def render_step(ctx: Tool6Context) -> bool:
     _inject_css()
 
     ss = st.session_state
-    st.subheader("Step 2 — General Project Information")
 
-    with st.container(border=True):
-        card_open(
-            "Review & Edit Information",
-            subtitle="Values are auto-filled from Google Sheet. Edit fields and click Save.",
-            variant="lg-variant-green",
-        )
+    # ✅ form prevents rerun on each keypress
+    with st.form(_FORM_ID, clear_on_submit=False):
+        updates: Dict[str, str] = {}
 
-        # ✅ form prevents rerun on each keypress
-        with st.form(_FORM_ID, clear_on_submit=False):
-            updates: Dict[str, str] = {}
+        tabs = st.tabs(["Project", "Respondent", "Monitoring", "Status / Other"])
 
-            tabs = st.tabs(["Project", "Respondent", "Monitoring", "Status / Other"])
+        # -------------------- Project --------------------
+        with tabs[0]:
+            _section_title("Project Details")
 
-            # -------------------- Project --------------------
-            with tabs[0]:
-                _section_title("Project Details")
+            left, right = _cols2()
+            with left:
+                updates["Province"] = w_text("Province", ctx)
+                updates["District"] = w_text("District", ctx)
+                updates["Village / Community"] = w_text("Village / Community", ctx)
+                updates["GPS points"] = w_text("GPS points", ctx, placeholder="e.g., 34.555, 69.207")
+                updates["Project Name"] = w_text("Project Name", ctx)
 
-                left, right = _cols2()
-                with left:
-                    updates["Province"] = w_text("Province", ctx)
-                    updates["District"] = w_text("District", ctx)
-                    updates["Village / Community"] = w_text("Village / Community", ctx)
-                    updates["GPS points"] = w_text("GPS points", ctx, placeholder="e.g., 34.555, 69.207")
-                    updates["Project Name"] = w_text("Project Name", ctx)
+            with right:
+                updates["Date of Visit"] = w_date("Date of Visit", ctx)
+                updates["Estimated Project Cost"] = w_money("Estimated Project Cost", ctx)
+                updates["Contracted Project Cost"] = w_money("Contracted Project Cost", ctx)
+                updates["Project Status"] = w_select("Project Status", ctx, ["Ongoing", "Completed", "Suspended"], allow_empty=True)
+                updates["Project progress"] = w_select("Project progress", ctx, ["Ahead of Schedule", "On Schedule", "Running behind"], allow_empty=True)
 
-                with right:
-                    updates["Date of Visit"] = w_date("Date of Visit", ctx)
-                    updates["Estimated Project Cost"] = w_money("Estimated Project Cost", ctx)
-                    updates["Contracted Project Cost"] = w_money("Contracted Project Cost", ctx)
-                    updates["Project Status"] = w_select("Project Status", ctx, ["Ongoing", "Completed", "Suspended"], allow_empty=True)
-                    updates["Project progress"] = w_select("Project progress", ctx, ["Ahead of Schedule", "On Schedule", "Running behind"], allow_empty=True)
+            st.divider()
 
-                st.divider()
+            _section_title("Contract & Progress")
 
-                _section_title("Contract & Progress")
+            c1, c2 = _cols2()
+            with c1:
+                updates["Contract Start Date"] = w_date("Contract Start Date", ctx)
+            with c2:
+                updates["Contract End Date"] = w_date("Contract End Date", ctx)
 
-                c1, c2 = _cols2()
-                with c1:
-                    updates["Contract Start Date"] = w_date("Contract Start Date", ctx)
-                with c2:
-                    updates["Contract End Date"] = w_date("Contract End Date", ctx)
+            c3, c4 = _cols2()
+            with c3:
+                updates["Previous Physical Progress (%)"] = w_percent("Previous Physical Progress (%)", ctx)
+            with c4:
+                updates["Current Physical Progress (%)"] = w_percent("Current Physical Progress (%)", ctx)
 
-                c3, c4 = _cols2()
-                with c3:
-                    updates["Previous Physical Progress (%)"] = w_percent("Previous Physical Progress (%)", ctx)
-                with c4:
-                    updates["Current Physical Progress (%)"] = w_percent("Current Physical Progress (%)", ctx)
+        # -------------------- Respondent --------------------
+        with tabs[1]:
+            _section_title("Respondent / Participant")
 
-            # -------------------- Respondent --------------------
-            with tabs[1]:
-                _section_title("Respondent / Participant")
+            updates["Name of the respondent (Participant / UNICEF / IPs)"] = w_text(
+                "Name of the respondent (Participant / UNICEF / IPs)", ctx
+            )
 
-                updates["Name of the respondent (Participant / UNICEF / IPs)"] = w_text(
-                    "Name of the respondent (Participant / UNICEF / IPs)", ctx
+            c1, c2 = _cols2(gap="large")
+            with c1:
+                updates["Sex of Respondent"] = w_select("Sex of Respondent", ctx, ["Male", "Female"], allow_empty=True)
+                updates["Contact Number of the Respondent"] = w_af_phone("Contact Number of the Respondent", ctx)
+            with c2:
+                updates["Email Address of the Respondent"] = w_email("Email Address of the Respondent", ctx)
+
+        # -------------------- Monitoring --------------------
+        with tabs[2]:
+            _section_title("Monitoring & Reporting")
+
+            left, right = _cols2()
+            with left:
+                updates["Name of the IP, Organization / NGO"] = w_text("Name of the IP, Organization / NGO", ctx)
+                updates["Name of the monitor engineer"] = w_text("Name of the monitor engineer", ctx)
+                updates["Email of the monitor engineer"] = w_email("Email of the monitor engineer", ctx)
+
+            with right:
+                updates["Monitoring Report Number"] = w_text("Monitoring Report Number", ctx)
+                updates["Date of Current Report"] = w_date("Date of Current Report", ctx)
+                updates["Date of Last Monitoring Report"] = w_date("Date of Last Monitoring Report", ctx)
+                updates["Number of Sites Visited"] = w_text("Number of Sites Visited", ctx, placeholder="e.g., 3")
+
+        # -------------------- Status / Other --------------------
+        with tabs[3]:
+            _section_title("Status / Risk / Other")
+
+            left, right = _cols2()
+            with left:
+                updates["Reason for delay"] = w_text("Reason for delay", ctx)
+                updates["CDC Code"] = w_text("CDC Code", ctx)
+                updates["Donor Name"] = w_text("Donor Name", ctx)
+
+            with right:
+                updates["Community agreement (Is the community/user group agreed on the well site?)"] = w_yes_no(
+                    "Community agreement (Is the community/user group agreed on the well site?)", ctx, allow_empty=True
                 )
+                updates["Work safety considered"] = w_yes_no("Work safety considered", ctx, allow_empty=True)
+                updates["Environmental risk"] = w_yes_no("Environmental risk", ctx, allow_empty=True)
 
-                c1, c2 = _cols2(gap="large")
-                with c1:
-                    updates["Sex of Respondent"] = w_select("Sex of Respondent", ctx, ["Male", "Female"], allow_empty=True)
-                    updates["Contact Number of the Respondent"] = w_af_phone("Contact Number of the Respondent", ctx)
-                with c2:
-                    updates["Email Address of the Respondent"] = w_email("Email Address of the Respondent", ctx)
+            st.divider()
 
-            # -------------------- Monitoring --------------------
-            with tabs[2]:
-                _section_title("Monitoring & Reporting")
+            _section_title("Available documents on site")
 
-                left, right = _cols2()
-                with left:
-                    updates["Name of the IP, Organization / NGO"] = w_text("Name of the IP, Organization / NGO", ctx)
-                    updates["Name of the monitor engineer"] = w_text("Name of the monitor engineer", ctx)
-                    updates["Email of the monitor engineer"] = w_email("Email of the monitor engineer", ctx)
+            d1, d2 = _cols2()
+            docs_left = ["Contract", "Journal", "BOQ", "Design drawings"]
+            docs_right = ["Site engineer", "Geophysical tests", "Water quality tests", "Pump test results"]
 
-                with right:
-                    updates["Monitoring Report Number"] = w_text("Monitoring Report Number", ctx)
-                    updates["Date of Current Report"] = w_date("Date of Current Report", ctx)
-                    updates["Date of Last Monitoring Report"] = w_date("Date of Last Monitoring Report", ctx)
-                    updates["Number of Sites Visited"] = w_text("Number of Sites Visited", ctx, placeholder="e.g., 3")
+            with d1:
+                for f in docs_left:
+                    updates[f] = w_yes_no(f, ctx, allow_empty=True)
+            with d2:
+                for f in docs_right:
+                    updates[f] = w_yes_no(f, ctx, allow_empty=True)
 
-            # -------------------- Status / Other --------------------
-            with tabs[3]:
-                _section_title("Status / Risk / Other")
+        saved = st.form_submit_button("Save changes", use_container_width=True)
 
-                left, right = _cols2()
-                with left:
-                    updates["Reason for delay"] = w_text("Reason for delay", ctx)
-                    updates["CDC Code"] = w_text("CDC Code", ctx)
-                    updates["Donor Name"] = w_text("Donor Name", ctx)
-
-                with right:
-                    updates["Community agreement (Is the community/user group agreed on the well site?)"] = w_yes_no(
-                        "Community agreement (Is the community/user group agreed on the well site?)", ctx, allow_empty=True
-                    )
-                    updates["Work safety considered"] = w_yes_no("Work safety considered", ctx, allow_empty=True)
-                    updates["Environmental risk"] = w_yes_no("Environmental risk", ctx, allow_empty=True)
-
-                st.divider()
-
-                _section_title("Available documents on site")
-
-                d1, d2 = _cols2()
-                docs_left = ["Contract", "Journal", "BOQ", "Design drawings"]
-                docs_right = ["Site engineer", "Geophysical tests", "Water quality tests", "Pump test results"]
-
-                with d1:
-                    for f in docs_left:
-                        updates[f] = w_yes_no(f, ctx, allow_empty=True)
-                with d2:
-                    for f in docs_right:
-                        updates[f] = w_yes_no(f, ctx, allow_empty=True)
-
-            saved = st.form_submit_button("Save changes", use_container_width=True)
-
-        card_close()
+    card_close()
 
     # Save only on submit
     if saved:
         ss["general_info_overrides"].update({k: _s(v) for k, v in updates.items()})
         ss["_t6_step2_saved"] = True
 
+    # ✅ single status card (no duplicates / no blank frames)
     if ss.get("_t6_step2_saved"):
         status_card("Information saved", "Edits are stored and will be used in the report.", level="success")
     else:
