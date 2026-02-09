@@ -314,14 +314,11 @@ STEPS = [
     "10) Generate Report",
 ]
 
-wiz = Wizard(WizardConfig(tool_name="Tool 6", steps=STEPS, key_prefix="tool6"))
-
+wiz = Wizard(WizardConfig(tool_name="Tool 6", steps=STEPS, key_prefix="tool5"))
 topbar(
     title="Tool 6 — Report Generator",
-    subtitle="Auto-filled from Google Sheet + SurveyCTO attachments",
     right_chip="WASH • UNICEF",
 )
-
 # MUST stay exactly "Tool 6" for Google Sheet lookup
 tool_name = "Tool 6"
 tpm_id = st.session_state.get("tpm_id")
