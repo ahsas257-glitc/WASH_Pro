@@ -13,7 +13,7 @@ except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
 from src.Tools.utils.types import Tool6Context
-from design.components.base_tool_ui import card_open, card_close, status_card
+from design.components.base_tool_ui import card_close, status_card
 
 
 # =============================================================================
@@ -32,7 +32,6 @@ SS_ADD_LEGEND = "tool6_add_legend"                      # bool
 SS_EXTRACTED = "tool6_summary_findings_extracted"       # list[{finding, recommendation}]
 
 # UX / autosave perf
-SS_EDITOR_DATA = "tool6_s8_editor_data"                 # st.data_editor return store
 SS_DATA_HASH = "tool6_s8_data_hash"                     # last saved hash
 SS_LAST_SAVE_TS = "tool6_s8_last_save_ts"               # str timestamp
 SS_DIRTY = "tool6_s8_dirty"                             # bool
@@ -86,16 +85,18 @@ def _clean_for_title(text: str) -> str:
     return t
 
 
-def _df_hash(df: "pd.DataFrame") -> str:
-    """
-    Hash only the relevant text columns to detect changes quickly.
-    """
+# =============================================================================
+# Fast df hash (VERY IMPORTANT FOR SPEED)
+# - avoids iterrows()
+# - uses vectorized join
+# =============================================================================
+def _df_hash_fast(df: "pd.DataFrame") -> str:
     try:
         cols = ["Finding", "Severity", "Recommendation / Corrective Action"]
-        blob = []
-        for _, r in df[cols].fillna("").iterrows():
-            blob.append("|".join([_s(r.get(c)) for c in cols]))
-        raw = "\n".join(blob).encode("utf-8", errors="ignore")
+        x = df[cols].fillna("").astype(str)
+        # vectorized row join -> huge speedup vs iterrows
+        joined = (x["Finding"] + "|" + x["Severity"] + "|" + x["Recommendation / Corrective Action"]).to_list()
+        raw = "\n".join(joined).encode("utf-8", errors="ignore")
         return hashlib.sha1(raw).hexdigest()[:16]
     except Exception:
         return "unknown"
@@ -113,10 +114,6 @@ STOPWORDS = {
 
 
 def _make_finding_title(component: str, finding_raw: str) -> str:
-    """
-    Build a short, meaningful title for the Finding column.
-    Output example: "Pump — Leakage at flange joint."
-    """
     comp = _clean_for_title(component)
     f = _clean_for_title(finding_raw)
 
@@ -139,8 +136,7 @@ def _make_finding_title(component: str, finding_raw: str) -> str:
         kept.append(t)
 
     core = " ".join(kept) if kept else f
-    core = _clamp_words(core, 10)
-    core = core.strip(" .;:,-")
+    core = _clamp_words(core, 10).strip(" .;:,-")
 
     if core and core[0].isalpha():
         core = core[0].upper() + core[1:]
@@ -197,9 +193,6 @@ def _score_patterns(text: str, patterns: List[str]) -> int:
 
 
 def _infer_severity(finding_raw: str, reco_raw: str) -> str:
-    """
-    Returns: High / Medium / Low based on simple, explainable rules.
-    """
     text = f"{_s(finding_raw)} | {_s(reco_raw)}"
     lo_text = text.lower()
 
@@ -252,9 +245,6 @@ def _summarize_reco(recos: List[str], fallback: str = "") -> str:
 # Section 5 fingerprint & extraction
 # =============================================================================
 def _fp_section5(component_observations: Any) -> str:
-    """
-    Fast fingerprint: titles + findings + recommendations count.
-    """
     if not isinstance(component_observations, list) or not component_observations:
         return "empty"
 
@@ -294,7 +284,6 @@ def _extract_from_section5(component_observations: List[Dict[str, Any]]) -> List
             continue
 
         comp_name = _s(comp.get("component") or comp.get("title") or comp.get("name") or "Component")
-
         ov = comp.get("observations_valid") or []
         if not isinstance(ov, list):
             continue
@@ -331,7 +320,6 @@ def _extract_from_section5(component_observations: List[Dict[str, Any]]) -> List
                             "recommendation_raw": "",
                         }
                     )
-
     return out
 
 
@@ -424,46 +412,59 @@ def _ensure_state(component_observations: List[Dict[str, Any]]) -> None:
         ss[SS_SOURCE_FP] = fp
 
 
-def _inject_table_css() -> None:
+# =============================================================================
+# Standard, aligned CSS
+# =============================================================================
+def _inject_standard_css() -> None:
     st.markdown(
         """
 <style>
-.t6-s8-sticky {
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  background: rgba(255,255,255,0.78);
-  backdrop-filter: blur(8px);
-  border: 1px solid rgba(0,0,0,0.06);
-  border-radius: 14px;
-  padding: 0.6rem 0.75rem;
-  margin-bottom: 0.75rem;
-}
+  [data-testid="stVerticalBlock"] { gap: 0.70rem; }
 
-@media (prefers-color-scheme: dark) {
-  .t6-s8-sticky {
-    background: rgba(10,10,10,0.55);
-    border: 1px solid rgba(255,255,255,0.10);
+  /* Card */
+  .t6-card {
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 14px;
+    background: rgba(255,255,255,0.02);
+    margin: 0.25rem 0 0.75rem 0;
   }
-}
+  .t6-card-title {
+    font-weight: 700;
+    font-size: 0.98rem;
+    margin-bottom: 0.35rem;
+  }
+  .t6-subtle { opacity: 0.85; font-size: 0.92rem; }
 
-.t6-s8-subtle {
-  opacity: 0.85;
-  font-size: 0.92rem;
-}
+  /* Sticky toolbar */
+  .t6-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(255,255,255,0.86);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(0,0,0,0.06);
+    border-radius: 14px;
+    padding: 0.65rem 0.75rem;
+    margin-bottom: 0.75rem;
+  }
 
-.t6-s8-pill {
-  display: inline-block;
-  padding: 0.2rem 0.55rem;
-  border-radius: 999px;
-  font-weight: 700;
-  font-size: 0.85rem;
-  border: 1px solid rgba(0,0,0,0.08);
-}
+  @media (prefers-color-scheme: dark) {
+    .t6-sticky { background: rgba(10,10,10,0.62); border: 1px solid rgba(255,255,255,0.10); }
+    .t6-card { border: 1px solid rgba(255,255,255,0.10); background: rgba(255,255,255,0.03); }
+  }
 
-@media (prefers-color-scheme: dark) {
-  .t6-s8-pill { border: 1px solid rgba(255,255,255,0.12); }
-}
+  .t6-pill {
+    display: inline-block;
+    padding: 0.2rem 0.55rem;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: 0.85rem;
+    border: 1px solid rgba(0,0,0,0.08);
+  }
+  @media (prefers-color-scheme: dark) {
+    .t6-pill { border: 1px solid rgba(255,255,255,0.12); }
+  }
 </style>
 """,
         unsafe_allow_html=True,
@@ -473,38 +474,31 @@ def _inject_table_css() -> None:
 # =============================================================================
 # Main renderer
 # =============================================================================
-def render_step(ctx: Tool6Context, *, title: str = "Step 8 — Summary of Findings") -> bool:
+def render_step(ctx: Tool6Context, *, title: str = "") -> bool:
     if pd is None:
         st.error("pandas is required for Step 8. Please install pandas.")
         return False
 
     _ = ctx
-    _inject_table_css()
+    _inject_standard_css()
 
-    st.subheader(title)
-    st.caption("Auto-generated from Section 5. You can edit findings, severity, and recommendations. Changes auto-save instantly.")
+    if title:
+        st.subheader(title)
 
     component_observations = st.session_state.get("tool6_component_observations_final")
     if component_observations is None:
         component_observations = st.session_state.get("component_observations", [])
-
     if not isinstance(component_observations, list):
         component_observations = []
 
     _ensure_state(component_observations)
 
     with st.container(border=True):
-        card_open(
-            "Summary of the findings",
-            subtitle="Auto-generated from Step 3/4 (Section 5). Edit severity and recommendations here. Auto-save is enabled.",
-            variant="lg-variant-cyan",
-        )
-
         # ---------------------------------------------------------
-        # Sticky toolbar (less scrolling + modern UX)
+        # Sticky toolbar (aligned)
         # ---------------------------------------------------------
-        st.markdown('<div class="t6-s8-sticky">', unsafe_allow_html=True)
-        t1, t2, t3, t4, t5 = st.columns([1.1, 1.4, 1.2, 1.2, 2.1], gap="small")
+        st.markdown('<div class="t6-sticky">', unsafe_allow_html=True)
+        t1, t2, t3, t4, t5 = st.columns([1.1, 1.5, 1.2, 1.2, 2.0], gap="small")
 
         with t1:
             st.session_state[SS_LOCK] = st.toggle(
@@ -546,33 +540,46 @@ def render_step(ctx: Tool6Context, *, title: str = "Step 8 — Summary of Findin
                 st.rerun()
 
         with t5:
-            # Save status
             dirty = bool(st.session_state.get(SS_DIRTY, False))
             last_ts = _s(st.session_state.get(SS_LAST_SAVE_TS))
             if dirty:
-                st.markdown("<span class='t6-s8-pill'>⚠️ Unsaved changes</span>", unsafe_allow_html=True)
+                st.markdown("<span class='t6-pill'>⚠️ Unsaved changes</span>", unsafe_allow_html=True)
             else:
                 msg = f"✅ Saved{(' at ' + last_ts) if last_ts else ''}"
-                st.markdown(f"<span class='t6-s8-pill'>{msg}</span>", unsafe_allow_html=True)
+                st.markdown(f"<span class='t6-pill'>{msg}</span>", unsafe_allow_html=True)
 
         st.markdown("</div>", unsafe_allow_html=True)
 
         # ---------------------------------------------------------
-        # Tabs: Table / Preview / Export (modern + low clutter)
+        # Tabs
         # ---------------------------------------------------------
-        tab_table, tab_preview, tab_export = st.tabs(["Table", "Preview", "Export"])
+        tab_table, tab_preview = st.tabs(["Table", "Preview"])
 
-        # Prepare DataFrame
+        # Build df (fast)
         rows = st.session_state.get(SS_ROWS) or []
+        norm_rows: List[Dict[str, str]] = []
         for i, r in enumerate(rows, start=1):
-            if isinstance(r, dict):
-                r["No."] = str(i)
+            if not isinstance(r, dict):
+                continue
+            norm_rows.append(
+                {
+                    "No.": str(i),
+                    "Finding": _s(r.get("Finding")),
+                    "Severity": _s(r.get("Severity")) or "Medium",
+                    "Recommendation / Corrective Action": _s(r.get("Recommendation / Corrective Action")) or "—",
+                }
+            )
 
-        df = pd.DataFrame(rows, columns=["No.", "Finding", "Severity", "Recommendation / Corrective Action"])
+        df = pd.DataFrame(norm_rows, columns=["No.", "Finding", "Severity", "Recommendation / Corrective Action"])
+
+        # We always ensure edited_df exists (prevents tab-order issues)
+        edited_df = df
 
         # ------------------ TABLE TAB ------------------
         with tab_table:
-            st.markdown("**Edit the table below** (auto-save is ON).")
+            st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-card-title'>Edit table</div>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-subtle'>Auto-save is ON. Changes are stored only when the table content changes.</div>", unsafe_allow_html=True)
 
             edited_df = st.data_editor(
                 df,
@@ -582,33 +589,30 @@ def render_step(ctx: Tool6Context, *, title: str = "Step 8 — Summary of Findin
                 column_config={
                     "No.": st.column_config.TextColumn("No.", disabled=True, width="small"),
                     "Finding": st.column_config.TextColumn("Finding", required=False, width="large"),
-                    "Severity": st.column_config.SelectboxColumn(
-                        "Severity",
-                        options=["High", "Medium", "Low"],
-                        required=True,
-                        width="small",
-                    ),
-                    "Recommendation / Corrective Action": st.column_config.TextColumn(
-                        "Recommendation / Corrective Action",
-                        required=False,
-                        width="large",
-                    ),
+                    "Severity": st.column_config.SelectboxColumn("Severity", options=["High", "Medium", "Low"], required=True, width="small"),
+                    "Recommendation / Corrective Action": st.column_config.TextColumn("Recommendation / Corrective Action", required=False, width="large"),
                 },
                 key=_key("editor"),
             )
 
-            # Quick tools row
-            q1, q2, q3 = st.columns([1.2, 1.2, 1.6], gap="small")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            # Quick tools (aligned card)
+            st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-card-title'>Tools</div>", unsafe_allow_html=True)
+            q1, q2, q3 = st.columns([1.3, 1.3, 2.0], gap="small")
+
             with q1:
                 if st.button("Auto-infer missing severity", use_container_width=True, key=_key("infer_missing")):
                     tmp = edited_df.copy()
-                    for idx, r in tmp.iterrows():
+                    # vectorized-ish loop (small n, ok), avoid rerun heavy work
+                    for idx, r in tmp.fillna("").iterrows():
                         sev = _s(r.get("Severity"))
                         finding = _s(r.get("Finding"))
                         reco = _s(r.get("Recommendation / Corrective Action"))
                         if finding and (sev not in ("High", "Medium", "Low")):
                             tmp.at[idx, "Severity"] = _infer_severity(finding, reco)
-                    edited_df = tmp
+                    st.session_state[_key("editor")] = tmp  # push into editor state
                     st.session_state[SS_DATA_HASH] = ""
                     st.session_state[SS_DIRTY] = True
                     st.rerun()
@@ -616,58 +620,49 @@ def render_step(ctx: Tool6Context, *, title: str = "Step 8 — Summary of Findin
             with q2:
                 if st.button("Normalize texts", use_container_width=True, key=_key("normalize")):
                     tmp = edited_df.copy()
-                    for idx, r in tmp.iterrows():
+                    for idx, r in tmp.fillna("").iterrows():
                         tmp.at[idx, "Finding"] = _norm_sentence(r.get("Finding"))
-                        reco = _s(r.get("Recommendation / Corrective Action"))
-                        tmp.at[idx, "Recommendation / Corrective Action"] = _norm_sentence(reco) or ("—" if reco.strip() == "" else reco)
-                    edited_df = tmp
+                        reco_raw = _s(r.get("Recommendation / Corrective Action"))
+                        tmp.at[idx, "Recommendation / Corrective Action"] = _norm_sentence(reco_raw) or ("—" if reco_raw.strip() == "" else reco_raw)
+                    st.session_state[_key("editor")] = tmp
                     st.session_state[SS_DATA_HASH] = ""
                     st.session_state[SS_DIRTY] = True
                     st.rerun()
 
             with q3:
-                st.caption("Tip: Add rows using the + button in the table. Remove empty rows using toolbar.")
+                st.caption("Tip: Keep each row short. Severity should reflect risk/impact.")
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
         # ------------------ PREVIEW TAB ------------------
         with tab_preview:
-            st.markdown("**Report-like preview** (what will be printed).")
-            with st.container(border=True):
-                items = []
-                for _, r in edited_df.fillna("").iterrows():
-                    f = _norm_sentence(r.get("Finding"))
-                    sev = _s(r.get("Severity")) or "Medium"
-                    reco = _norm_sentence(r.get("Recommendation / Corrective Action")) or "—"
-                    if _s(f).strip(". "):
-                        items.append((sev, f, reco))
+            st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-card-title'>Report-like preview</div>", unsafe_allow_html=True)
 
-                if not items:
-                    st.info("No valid findings yet.")
-                else:
-                    for i, (sev, f, reco) in enumerate(items, start=1):
-                        st.markdown(f"**{i}. [{sev}]** {f}")
-                        st.markdown(f"- Recommendation: {reco}")
+            items: List[Tuple[str, str, str]] = []
+            for _, r in edited_df.fillna("").iterrows():
+                f = _norm_sentence(r.get("Finding"))
+                sev = _s(r.get("Severity")) or "Medium"
+                reco = _norm_sentence(r.get("Recommendation / Corrective Action")) or "—"
+                if _s(f).strip(". "):
+                    items.append((sev, f, reco))
 
-        # ------------------ EXPORT TAB ------------------
-        with tab_export:
-            st.markdown("**Export table (CSV)**")
-            csv_bytes = edited_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "Download CSV",
-                data=csv_bytes,
-                file_name="summary_of_findings.csv",
-                mime="text/csv",
-                use_container_width=True,
-                key=_key("dl_csv"),
-            )
+            if not items:
+                st.info("No valid findings yet.")
+            else:
+                for i, (sev, f, reco) in enumerate(items, start=1):
+                    st.markdown(f"**{i}. [{sev}]** {f}")
+                    st.markdown(f"- Recommendation: {reco}")
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
         # ---------------------------------------------------------
-        # AUTO-SAVE (fast + only when changed)
+        # AUTO-SAVE (FAST + ONLY WHEN CHANGED)
         # ---------------------------------------------------------
-        current_hash = _df_hash(edited_df)
+        current_hash = _df_hash_fast(edited_df)
         last_hash = _s(st.session_state.get(SS_DATA_HASH))
 
         if current_hash != last_hash:
-            # Convert df -> rows
             new_rows: List[Dict[str, str]] = []
             for _, r in edited_df.fillna("").iterrows():
                 new_rows.append(
@@ -682,23 +677,20 @@ def render_step(ctx: Tool6Context, *, title: str = "Step 8 — Summary of Findin
             st.session_state[SS_ROWS] = new_rows
 
             extracted, sev_by_no, sev_by_finding = _rows_to_payload(new_rows)
-
             st.session_state[SS_SEVERITY_BY_NO] = sev_by_no
             st.session_state[SS_SEVERITY_BY_FINDING] = sev_by_finding
             st.session_state[SS_EXTRACTED] = extracted
 
-            # Compatibility key
+            # compatibility
             st.session_state["tool6_summary_findings_extracted"] = extracted
 
-            # Save status
             st.session_state[SS_DATA_HASH] = current_hash
             st.session_state[SS_LAST_SAVE_TS] = _now_hhmmss()
             st.session_state[SS_DIRTY] = False
         else:
-            # no change
             st.session_state[SS_DIRTY] = False
 
-        # Status
+        # Status (aligned)
         st.divider()
         extracted_final = st.session_state.get(SS_EXTRACTED, []) or []
         if extracted_final:
