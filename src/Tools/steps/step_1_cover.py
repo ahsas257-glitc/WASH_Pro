@@ -10,7 +10,6 @@ from typing import Any, Dict, List, Optional, Tuple, Callable
 import streamlit as st
 from PIL import Image
 
-from pages.Tool_6 import _to_clean_png_bytes
 from src.Tools.utils.types import Tool6Context
 
 
