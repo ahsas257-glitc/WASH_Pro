@@ -1,7 +1,6 @@
 # src/Tools/steps/step_5_work_progress.py
 from __future__ import annotations
 
-import csv
 import hashlib
 import io
 import re
@@ -10,7 +9,7 @@ from typing import Any, Dict, List, Tuple
 import streamlit as st
 
 from src.Tools.utils.types import Tool6Context
-from design.components.base_tool_ui import card_open, card_close, status_card
+from design.components.base_tool_ui import card_close, status_card
 
 
 # =============================================================================
@@ -52,8 +51,56 @@ class UIConfig:
     # Pagination
     ROWS_PER_PAGE_OPTIONS = [10, 20, 50, 100]
 
-    # Compact rendering
-    COMPACT_BORDER = False
+
+# =============================================================================
+# Styling
+# =============================================================================
+def _inject_css() -> None:
+    st.markdown(
+        """
+        <style>
+          [data-testid="stVerticalBlock"] { gap: 0.70rem; }
+
+          /* Card wrapper (Cards view) */
+          .t6-rowcard {
+            border: 1px solid rgba(255,255,255,0.12);
+            border-radius: 14px;
+            padding: 14px;
+            background: rgba(255,255,255,0.02);
+            margin: 10px 0 12px 0;
+          }
+
+          .t6-rowcard .t6-title {
+            font-weight: 700;
+            margin-bottom: 6px;
+          }
+
+          /* Small toolbar buttons align nicely */
+          .t6-btnrow [data-testid="stHorizontalBlock"] {
+            align-items: center;
+          }
+
+          /* Compact expander extra spacing */
+          div[data-testid="stExpander"] > details {
+            border-radius: 14px !important;
+          }
+
+          /* Make inputs look aligned */
+          div[data-testid="stTextInput"] input,
+          div[data-testid="stTextArea"] textarea,
+          div[data-testid="stSelectbox"] div[role="combobox"],
+          div[data-testid="stNumberInput"] input {
+            width: 100% !important;
+          }
+
+          /* Slightly tighter labels in dense areas */
+          label, .st-emotion-cache-1p1nwyz, .st-emotion-cache-1y4p8pa {
+            line-height: 1.15;
+          }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 # =============================================================================
@@ -139,8 +186,7 @@ def _default_row(i: int) -> Dict[str, str]:
         "Achieved Unit": "",
         "Progress": "",
         "Remarks": "",
-        # Row-level override when global auto-calc is ON (manual for this row)
-        "Override Progress": "0",  # store as "0"/"1" to remain stringy like the rest
+        "Override Progress": "0",  # "0"/"1"
     }
 
 
@@ -221,14 +267,14 @@ def _ensure_state() -> None:
 
 def _sync_rows_if_titles_changed() -> None:
     """
-    ✅ Performance: sync from Step 3 only when titles changed.
+    ✅ Sync from Step 3 only when titles changed.
     Keeps user-entered values when matching activities exist.
     """
     titles = _titles_from_step3()
     h = _titles_hash(titles)
 
     if st.session_state.get(SS_TITLES_HASH) == h:
-        return  # no changes
+        return
 
     cur = _normalize_rows(st.session_state.get(SS_WORK, []))
 
@@ -255,7 +301,7 @@ def _sync_rows_if_titles_changed() -> None:
         row["No."] = str(i)
         new_rows.append(row)
 
-    # keep extra manual rows at bottom
+    # Keep extra manual rows at bottom
     used = set(strip_heading_numbering(t) or t for t in titles)
     extras = [r for r in cur if _s(r.get("Activities")) and _s(r.get("Activities")) not in used]
     for r in extras:
@@ -310,15 +356,12 @@ def _duplicate_row(idx_0based: int) -> None:
     rows = _normalize_rows(st.session_state.get(SS_WORK, []))
     if 0 <= idx_0based < len(rows):
         copy_row = dict(rows[idx_0based])
-        copy_row["No."] = ""  # will be normalized
+        copy_row["No."] = ""
         rows.insert(idx_0based + 1, copy_row)
     st.session_state[SS_WORK] = _normalize_rows(rows)
 
 
 def _move_row(idx_0based: int, direction: int) -> None:
-    """
-    direction: -1 up, +1 down
-    """
     rows = _normalize_rows(st.session_state.get(SS_WORK, []))
     j = idx_0based + direction
     if 0 <= idx_0based < len(rows) and 0 <= j < len(rows):
@@ -327,7 +370,7 @@ def _move_row(idx_0based: int, direction: int) -> None:
 
 
 # =============================================================================
-# Safe progress sync callbacks (kept, same idea)
+# Safe progress sync callbacks
 # =============================================================================
 def _sync_progress_from_slider(i_global: int) -> None:
     slider_key = _key("p_slider", i_global)
@@ -356,60 +399,9 @@ CSV_COLUMNS = [
 ]
 
 
-def _rows_to_csv_text(rows: List[Dict[str, str]]) -> str:
-    buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=["No."] + CSV_COLUMNS, extrasaction="ignore")
-    w.writeheader()
-    for r in rows:
-        w.writerow(r)
-    return buf.getvalue()
-
-
-def _csv_text_to_rows(text: str) -> Tuple[List[Dict[str, str]], List[str]]:
-    """
-    Returns: (rows, warnings)
-    """
-    warnings: List[str] = []
-    out: List[Dict[str, str]] = []
-
-    try:
-        buf = io.StringIO(text)
-        reader = csv.DictReader(buf)
-        if not reader.fieldnames:
-            return [], ["CSV has no header row."]
-
-        # accept some common variants
-        fieldmap = {f.strip(): f.strip() for f in reader.fieldnames if f}
-        # minimal required
-        if "Activities" not in fieldmap:
-            return [], ["CSV must include 'Activities' column."]
-
-        for raw in reader:
-            if not isinstance(raw, dict):
-                continue
-            r = _default_row(len(out) + 1)
-            r["Activities"] = _s(raw.get("Activities"))
-            r["Planned"] = _s(raw.get("Planned"))
-            r["Planned Unit"] = _s(raw.get("Planned Unit"))
-            r["Achieved"] = _s(raw.get("Achieved"))
-            r["Achieved Unit"] = _s(raw.get("Achieved Unit"))
-            r["Progress"] = _s(raw.get("Progress"))
-            r["Remarks"] = _s(raw.get("Remarks"))
-            ov = _s(raw.get("Override Progress"))
-            r["Override Progress"] = "1" if ov in ("1", "true", "True", "yes", "Yes") else "0"
-            out.append(r)
-
-    except Exception:
-        return [], ["Failed to parse CSV. Please ensure it is a valid CSV file."]
-
-    out = _normalize_rows(out)
-    if not out:
-        warnings.append("CSV parsed but no rows were found.")
-    return out, warnings
-
 
 # =============================================================================
-# Validation + KPIs
+# Validation + filtering + pagination
 # =============================================================================
 def _row_warnings(planned: float, achieved: float, p_unit: str, a_unit: str) -> List[str]:
     w: List[str] = []
@@ -424,13 +416,6 @@ def _row_warnings(planned: float, achieved: float, p_unit: str, a_unit: str) -> 
     return w
 
 
-def _safe_int(v: Any, default: int = 0) -> int:
-    try:
-        return int(v)
-    except Exception:
-        return default
-
-
 def _apply_search_filter(rows: List[Dict[str, str]], query: str) -> List[int]:
     q = _s(query).lower()
     if not q:
@@ -443,9 +428,9 @@ def _apply_search_filter(rows: List[Dict[str, str]], query: str) -> List[int]:
 
 
 def _paginate(indices: List[int], rows_per_page: int, page: int) -> Tuple[List[int], int]:
+    total = len(indices)
     if rows_per_page <= 0:
         return indices, 1
-    total = len(indices)
     total_pages = max(1, (total + rows_per_page - 1) // rows_per_page)
     page = max(1, min(total_pages, page))
     start = (page - 1) * rows_per_page
@@ -457,13 +442,8 @@ def _paginate(indices: List[int], rows_per_page: int, page: int) -> Tuple[List[i
 # Unit selector
 # =============================================================================
 def _unit_picker(label: str, current_unit: str, key_prefix: str) -> str:
-    """
-    Returns the final unit string to store.
-    UI: preset select + optional custom when "Other…"
-    """
     cur = _s(current_unit)
 
-    # Decide initial select value
     if cur in UIConfig.UNIT_PRESETS:
         sel = cur
         other_val = ""
@@ -479,38 +459,27 @@ def _unit_picker(label: str, current_unit: str, key_prefix: str) -> str:
     if other_key not in st.session_state:
         st.session_state[other_key] = other_val
 
-    selected = st.selectbox(label, options=UIConfig.UNIT_PRESETS, key=sel_key, label_visibility="visible")
+    selected = st.selectbox(label, options=UIConfig.UNIT_PRESETS, key=sel_key)
     if selected == UIConfig.UNIT_OTHER_SENTINEL:
-        custom = st.text_input("Custom", key=other_key, placeholder="e.g., bags", label_visibility="visible")
+        custom = st.text_input("Custom", key=other_key, placeholder="e.g., bags")
         return _s(custom)
     return _s(selected)
 
 
 # =============================================================================
-# Main render
+# MAIN
 # =============================================================================
 def render_step(ctx: Tool6Context, **_) -> bool:
     _ = ctx
     _ensure_state()
-
-    st.subheader("Step 5 — Work Progress Summary")
+    _inject_css()
 
     with st.container(border=True):
-        card_open(
-            "Work Progress Summary during the Visit",
-            subtitle=(
-                "Activities are auto-filled from Step 3 (titles). "
-                "Planned/Achieved are numeric. Progress can be manual or auto-calculated. "
-                "Units, search, pagination, CSV import/export, and row actions are available."
-            ),
-            variant="lg-variant-cyan",
-        )
-
-        # ✅ FAST sync only when Step 3 titles changed
+        # ✅ Sync only when titles changed
         _sync_rows_if_titles_changed()
 
-        # ---- Top controls row (reset/add/auto/view/search) ----
-        c1, c2, c3, c4, c5 = st.columns([1.2, 1.2, 1.3, 1.2, 2.1], gap="small")
+        # ---- Top controls ----
+        c1, c2, c3, c4, c5 = st.columns([1.2, 1.2, 1.4, 1.4, 2.0], gap="small")
 
         with c1:
             if st.button("Reset from Step 3 titles", use_container_width=True, key=_key("reset")):
@@ -518,6 +487,7 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                 st.session_state[SS_WORK] = _default_rows_from_titles(titles)
                 st.session_state[SS_TITLES_HASH] = _titles_hash(titles)
                 st.session_state[SS_PAGE] = 1
+                st.rerun()
 
         with c2:
             st.button("Add empty row", use_container_width=True, key=_key("add_row"), on_click=_add_empty_row)
@@ -527,10 +497,6 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                 "Auto-calc Progress",
                 value=bool(st.session_state.get(SS_AUTO_PROGRESS, False)),
                 key=_key("auto_calc"),
-                help=(
-                    "If ON: Progress is computed from Achieved/Planned. "
-                    "You can still override progress per-row using 'Override manual progress'."
-                ),
             )
             st.session_state[SS_AUTO_PROGRESS] = bool(auto_calc_val)
 
@@ -550,36 +516,34 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                 key=_key("search"),
                 placeholder="Type to filter…",
             )
+            # اگر کاربر چیزی نوشت، صفحه را ۱ کن
+            if _s(search_q) != _s(st.session_state.get(SS_SEARCH, "")):
+                st.session_state[SS_PAGE] = 1
             st.session_state[SS_SEARCH] = _s(search_q)
-            # When search changes, reset to page 1
-            st.session_state[SS_PAGE] = 1
 
-        st.caption("Progress is stored exactly (e.g., 60%) and printed in the report.")
         st.divider()
 
         # ---- Rows + KPIs ----
         rows = _normalize_rows(st.session_state.get(SS_WORK, []))
         auto_calc = bool(st.session_state.get(SS_AUTO_PROGRESS, False))
 
-        # KPIs (computed from current rows)
         planned_sum = 0.0
         achieved_sum = 0.0
-        avg_progress = 0.0
         warn_count = 0
+        avg_progress_sum = 0
 
-        # We compute based on stored values (fast, no widgets)
         for r in rows:
             p = _safe_float(_s(r.get("Planned")))
             a = _safe_float(_s(r.get("Achieved")))
             planned_sum += p
             achieved_sum += a
             pct = _parse_progress_percent(_s(r.get("Progress")))
-            avg_progress += pct
-            w = _row_warnings(p, a, _s(r.get("Planned Unit")), _s(r.get("Achieved Unit")))
-            warn_count += 1 if w else 0
+            avg_progress_sum += pct
+            if _row_warnings(p, a, _s(r.get("Planned Unit")), _s(r.get("Achieved Unit"))):
+                warn_count += 1
 
         total_rows = len(rows)
-        avg_progress = (avg_progress / total_rows) if total_rows else 0.0
+        avg_progress = (avg_progress_sum / total_rows) if total_rows else 0.0
 
         k1, k2, k3, k4 = st.columns(4, gap="small")
         k1.metric("Rows", str(total_rows))
@@ -589,143 +553,57 @@ def render_step(ctx: Tool6Context, **_) -> bool:
 
         st.divider()
 
-        # ---- Import/Export + Pagination controls ----
-        ex1, ex2, ex3, ex4 = st.columns([1.4, 1.6, 1.2, 1.8], gap="small")
 
-        with ex1:
-            csv_text = _rows_to_csv_text(rows)
-            st.download_button(
-                "Download CSV",
-                data=csv_text.encode("utf-8"),
-                file_name="work_progress_step5.csv",
-                mime="text/csv",
-                use_container_width=True,
-                key=_key("dl_csv"),
-            )
 
-        with ex2:
-            up = st.file_uploader("Upload CSV", type=["csv"], key=_key("up_csv"), label_visibility="visible")
-            if up is not None:
-                try:
-                    raw = up.read().decode("utf-8", errors="replace")
-                except Exception:
-                    raw = ""
-                new_rows, warnings = _csv_text_to_rows(raw)
-                if new_rows:
-                    st.session_state[SS_WORK] = _normalize_rows(new_rows)
-                    st.session_state[SS_PAGE] = 1
-                    status_card("Imported", "CSV imported successfully.", level="success")
-                else:
-                    msg = " | ".join(warnings) if warnings else "CSV import failed."
-                    status_card("Import failed", msg, level="error")
-
-        with ex3:
-            rows_per_page = st.selectbox(
-                "Rows/page",
-                options=UIConfig.ROWS_PER_PAGE_OPTIONS,
-                index=UIConfig.ROWS_PER_PAGE_OPTIONS.index(int(st.session_state.get(SS_ROWS_PER_PAGE, 20))),
-                key=_key("rpp"),
-                label_visibility="visible",
-            )
-            st.session_state[SS_ROWS_PER_PAGE] = int(rows_per_page)
-
-        with ex4:
-            if st.session_state.get(SS_VIEW_MODE) == "Compact":
-                collapse_all = st.toggle(
-                    "Collapse all",
-                    value=bool(st.session_state.get(SS_COLLAPSE_ALL, False)),
-                    key=_key("collapse_all"),
-                )
-                st.session_state[SS_COLLAPSE_ALL] = bool(collapse_all)
-            else:
-                st.write("")  # spacing
-
-        # Filter + paginate indices
+        # ---- Filter + paginate ----
         filtered_indices = _apply_search_filter(rows, _s(st.session_state.get(SS_SEARCH, "")))
         page = int(st.session_state.get(SS_PAGE, 1))
         rpp = int(st.session_state.get(SS_ROWS_PER_PAGE, 20))
         page_indices, total_pages = _paginate(filtered_indices, rpp, page)
         st.session_state[SS_PAGE] = max(1, min(total_pages, page))
 
-        p1, p2, p3 = st.columns([1.2, 1.2, 3.6], gap="small")
-        with p1:
-            if st.button("◀ Prev", use_container_width=True, key=_key("prev")):
-                st.session_state[SS_PAGE] = max(1, int(st.session_state[SS_PAGE]) - 1)
-        with p2:
-            if st.button("Next ▶", use_container_width=True, key=_key("next")):
-                st.session_state[SS_PAGE] = min(total_pages, int(st.session_state[SS_PAGE]) + 1)
-        with p3:
-            st.caption(f"Showing {len(page_indices)} of {len(filtered_indices)} (Page {st.session_state[SS_PAGE]} / {total_pages})")
-
         st.divider()
 
-        # ---- Render rows (only current page) ----
-        updated_rows = list(rows)  # keep non-visible rows intact
+        # ---- Render rows ----
+        updated_rows = list(rows)
         view_mode = st.session_state.get(SS_VIEW_MODE, "Cards")
         collapse_all = bool(st.session_state.get(SS_COLLAPSE_ALL, False))
 
         for i_global in page_indices:
             r = rows[i_global]
 
-            # Layout wrapper
+            # ✅ ALWAYS define container_ctx (fixes UnboundLocalError)
             if view_mode == "Compact":
                 header = f"Row {i_global + 1}: {_s(r.get('Activities')) or '(no activity)'}"
-                exp = st.expander(header, expanded=not collapse_all)
-                container_ctx = exp
+                container_ctx = st.expander(header, expanded=not collapse_all)
+                card_wrap = False
             else:
-                container_ctx = st.container(border=True)
+                container_ctx = st.container()
+                card_wrap = True
 
             with container_ctx:
-                # Row header + actions
-                h1, h2, h3, h4 = st.columns([5.0, 1.2, 1.2, 1.2], gap="small")
+                if card_wrap:
+                    st.markdown("<div class='t6-rowcard'>", unsafe_allow_html=True)
+                    title = f"Row {i_global + 1}" if UIConfig.SHOW_ROW_NUMBERS else "Row"
+                    st.markdown(f"<div class='t6-title'>{title}</div>", unsafe_allow_html=True)
+
+                # Actions row
+                st.markdown("<div class='t6-btnrow'>", unsafe_allow_html=True)
+                h1, h2, h3, h4, h5 = st.columns([4.8, 1.2, 1.2, 1.2, 1.2], gap="small")
                 with h1:
-                    label = f"Row {i_global + 1}" if UIConfig.SHOW_ROW_NUMBERS else "Row"
-                    st.markdown(f"**{label}**")
-
+                    st.caption(_s(r.get("Activities")) or "(no activity)")
                 with h2:
-                    st.button(
-                        "Duplicate",
-                        use_container_width=True,
-                        key=_key("dup", i_global),
-                        on_click=_duplicate_row,
-                        args=(i_global,),
-                    )
-
+                    st.button("Duplicate", use_container_width=True, key=_key("dup", i_global), on_click=_duplicate_row, args=(i_global,))
                 with h3:
-                    up_disabled = i_global == 0
-                    st.button(
-                        "Up",
-                        use_container_width=True,
-                        key=_key("up", i_global),
-                        on_click=_move_row,
-                        args=(i_global, -1),
-                        disabled=up_disabled,
-                    )
-
+                    st.button("Up", use_container_width=True, key=_key("up", i_global), on_click=_move_row, args=(i_global, -1), disabled=(i_global == 0))
                 with h4:
-                    down_disabled = i_global == (len(rows) - 1)
-                    st.button(
-                        "Down",
-                        use_container_width=True,
-                        key=_key("down", i_global),
-                        on_click=_move_row,
-                        args=(i_global, +1),
-                        disabled=down_disabled,
-                    )
+                    st.button("Down", use_container_width=True, key=_key("down", i_global), on_click=_move_row, args=(i_global, +1), disabled=(i_global == (len(rows) - 1)))
+                with h5:
+                    st.button("Remove", use_container_width=True, key=_key("rm", i_global), on_click=_remove_row, args=(i_global,))
+                st.markdown("</div>", unsafe_allow_html=True)
 
-                # Remove (separate to avoid misclicks)
-                rr1, rr2 = st.columns([7, 1], gap="small")
-                with rr2:
-                    st.button(
-                        "Remove",
-                        use_container_width=True,
-                        key=_key("rm", i_global),
-                        on_click=_remove_row,
-                        args=(i_global,),
-                    )
-
-                # Main row inputs
-                colA, colB, colC, colD, colE = st.columns([3.0, 2.0, 2.0, 2.2, 2.4], gap="small")
+                # Main inputs
+                colA, colB, colC, colD, colE = st.columns([3.2, 2.4, 2.4, 2.2, 2.8], gap="small")
 
                 with colA:
                     activities = st.text_input(
@@ -735,9 +613,8 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                         placeholder="e.g., Construction of boundary wall",
                     )
 
-                # Planned + Unit
                 with colB:
-                    p1, p2 = st.columns([2.0, 1.4], gap="small")
+                    p1, p2 = st.columns([2.0, 1.5], gap="small")
                     with p1:
                         planned_val = st.number_input(
                             "Planned",
@@ -754,9 +631,8 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                             key_prefix=f"planned_unit.{i_global}",
                         )
 
-                # Achieved + Unit
                 with colC:
-                    a1, a2 = st.columns([2.0, 1.4], gap="small")
+                    a1, a2 = st.columns([2.0, 1.5], gap="small")
                     with a1:
                         achieved_val = st.number_input(
                             "Achieved",
@@ -773,9 +649,7 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                             key_prefix=f"achieved_unit.{i_global}",
                         )
 
-                # Progress + overrides + visuals
                 with colD:
-                    # Row override (when global auto is ON)
                     override_key = _key("override", i_global)
                     if override_key not in st.session_state:
                         st.session_state[override_key] = (_s(r.get("Override Progress")) == "1")
@@ -784,16 +658,11 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                         "Override manual progress",
                         value=bool(st.session_state[override_key]),
                         key=override_key,
-                        help="If ON (and Auto-calc is ON): this row will allow manual progress entry.",
+                        help="If ON (and Auto-calc is ON): this row allows manual progress entry.",
                     )
 
-                    # Determine whether this row is auto-calculated
                     row_is_auto = bool(auto_calc) and (not bool(override_manual))
-
-                    if row_is_auto:
-                        pct = _calc_progress(float(planned_val), float(achieved_val))
-                    else:
-                        pct = _parse_progress_percent(_s(r.get("Progress")))
+                    pct = _calc_progress(float(planned_val), float(achieved_val)) if row_is_auto else _parse_progress_percent(_s(r.get("Progress")))
 
                     slider_key = _key("p_slider", i_global)
                     number_key = _key("p_number", i_global)
@@ -842,7 +711,6 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                         placeholder="Optional notes...",
                     )
 
-                # Row validations (human-friendly)
                 warn_list = _row_warnings(
                     planned=float(planned_val),
                     achieved=float(achieved_val),
@@ -853,7 +721,6 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                     for w in warn_list:
                         st.warning(w)
 
-                # Commit updates for this row into the global list
                 updated_rows[i_global] = {
                     "No.": str(i_global + 1),
                     "Activities": _s(activities),
@@ -866,14 +733,13 @@ def render_step(ctx: Tool6Context, **_) -> bool:
                     "Override Progress": "1" if bool(override_manual) else "0",
                 }
 
-            # Small divider for compact mode readability
-            if view_mode == "Compact":
-                st.markdown("---")
+                if card_wrap:
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-        # Normalize + store back
+        # Store back
         st.session_state[SS_WORK] = _normalize_rows(updated_rows)
 
-        # Overall saved/empty status
+        # Status
         has_any = any(_s(r.get("Activities")) for r in st.session_state[SS_WORK])
         if has_any:
             if warn_count > 0:
