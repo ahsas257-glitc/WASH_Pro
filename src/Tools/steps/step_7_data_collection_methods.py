@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 
 from src.Tools.utils.types import Tool6Context
-from design.components.base_tool_ui import card_open, card_close, status_card
+from design.components.base_tool_ui import card_close, status_card
 
 
 # =============================================================================
@@ -66,8 +66,8 @@ class UIConfig:
     MOBILE_BREAKPOINT_PX = 900
 
     # Editor sizes
-    LIST_EDITOR_HEIGHT = 170
-    NARR_EDITOR_HEIGHT = 240
+    LIST_EDITOR_HEIGHT = 180
+    NARR_EDITOR_HEIGHT = 260
 
     # Defaults
     DEFAULT_STYLE = "Standard"
@@ -178,40 +178,79 @@ def _simple_diff(a: str, b: str, max_lines: int = 140) -> str:
     return "\n".join(out)
 
 
-def _inject_responsive_css() -> None:
+# =============================================================================
+# UI styling (STANDARD + ALIGNED)
+# =============================================================================
+def _inject_standard_css() -> None:
     st.markdown(
         f"""
 <style>
-.t6-s7-subtle {{
-  opacity: 0.85;
-  font-size: 0.92rem;
-}}
+  [data-testid="stVerticalBlock"] {{ gap: 0.70rem; }}
 
-.t6-s7-sticky {{
-  position: sticky;
-  top: 0;
-  z-index: 50;
-  background: rgba(255,255,255,0.78);
-  backdrop-filter: blur(8px);
-  padding: 0.6rem 0.75rem;
-  border-radius: 14px;
-  border: 1px solid rgba(0,0,0,0.06);
-  margin-bottom: 0.75rem;
-}}
-
-@media (prefers-color-scheme: dark) {{
-  .t6-s7-sticky {{
-    background: rgba(10,10,10,0.55);
-    border: 1px solid rgba(255,255,255,0.10);
-  }}
-}}
-
-@media (max-width: {UIConfig.MOBILE_BREAKPOINT_PX}px) {{
-  div[data-testid="column"] {{
+  /* Global input alignment */
+  div[data-testid="stTextInput"] input,
+  div[data-testid="stTextArea"] textarea,
+  div[data-testid="stSelectbox"] div[role="combobox"],
+  div[data-testid="stNumberInput"] input {{
     width: 100% !important;
-    flex: 1 1 100% !important;
   }}
-}}
+
+  /* Consistent card */
+  .t6-card {{
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 14px;
+    background: rgba(255,255,255,0.02);
+    margin: 0.25rem 0 0.75rem 0;
+  }}
+
+  .t6-card-title {{
+    font-weight: 700;
+    font-size: 0.98rem;
+    margin-bottom: 0.35rem;
+  }}
+
+  .t6-subtle {{
+    opacity: 0.84;
+    font-size: 0.92rem;
+  }}
+
+  /* Sticky bar */
+  .t6-sticky {{
+    position: sticky;
+    top: 0;
+    z-index: 50;
+    background: rgba(255,255,255,0.86);
+    backdrop-filter: blur(10px);
+    padding: 0.65rem 0.75rem;
+    border-radius: 14px;
+    border: 1px solid rgba(0,0,0,0.06);
+    margin-bottom: 0.75rem;
+  }}
+
+  @media (prefers-color-scheme: dark) {{
+    .t6-sticky {{
+      background: rgba(10,10,10,0.62);
+      border: 1px solid rgba(255,255,255,0.10);
+    }}
+    .t6-card {{
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(255,255,255,0.03);
+    }}
+  }}
+
+  /* Make columns align nicely (top aligned) */
+  div[data-testid="column"] {{
+    align-self: flex-start !important;
+  }}
+
+  /* Mobile responsiveness */
+  @media (max-width: {UIConfig.MOBILE_BREAKPOINT_PX}px) {{
+    div[data-testid="column"] {{
+      width: 100% !important;
+      flex: 1 1 100% !important;
+    }}
+  }}
 </style>
 """,
         unsafe_allow_html=True,
@@ -222,12 +261,6 @@ def _inject_responsive_css() -> None:
 # Translation (pluggable, same pattern as Step 6)
 # =============================================================================
 def _get_translate_callable(ctx: Tool6Context):
-    """
-    Return a callable: fn(text:str, target:str)->str, or None
-    Priority:
-      1) st.session_state["tool6_translate_fn"]
-      2) ctx.translate / ctx.translator / ctx.translate_text if present
-    """
     fn = st.session_state.get("tool6_translate_fn")
     if callable(fn):
         return fn
@@ -249,7 +282,7 @@ def _translate_text(ctx: Tool6Context, text: str, target: str) -> Tuple[str, Opt
     if not fn:
         return t, (
             "No translation engine is configured. "
-            "To enable one-click translate, register a callable in st.session_state['tool6_translate_fn'] "
+            "Register a callable in st.session_state['tool6_translate_fn'] "
             "that accepts (text, target) and returns translated text."
         )
 
@@ -297,7 +330,6 @@ def _ensure_state() -> None:
     ss.setdefault("general_info_overrides", {})
     ovr = ss["general_info_overrides"]
 
-    # Ensure all flags exist
     for k, _ in FLAGS:
         ovr.setdefault(k, False)
 
@@ -336,7 +368,7 @@ def _build_doc_review_phrase(ovr: Dict[str, Any], style: str) -> str:
 
 def _auto_generate_methods_list(ovr: Dict[str, Any], style: str, tone: str) -> List[str]:
     style = style or UIConfig.DEFAULT_STYLE
-    _ = tone  # tone currently affects narrative more than list; kept for future extension.
+    _ = tone
 
     methods: List[str] = []
 
@@ -344,7 +376,9 @@ def _auto_generate_methods_list(ovr: Dict[str, Any], style: str, tone: str) -> L
         if style == "Short":
             methods.append("Direct technical observation on-site.")
         elif style == "Detailed":
-            methods.append("Direct on-site technical observation to verify work progress, construction quality, and functionality against approved specifications.")
+            methods.append(
+                "Direct on-site technical observation to verify work progress, construction quality, and functionality against approved specifications."
+            )
         else:
             methods.append("Direct technical observation of work progress and construction quality on-site.")
 
@@ -424,7 +458,6 @@ def _auto_generate_narrative_dynamic(ovr: Dict[str, Any], style: str, tone: str)
         ]
     )
 
-    # Opening varies by style
     if style == "Short":
         opening = tb["opening"] + "combining field verification, documentation review, and stakeholder engagement where applicable."
     elif style == "Detailed":
@@ -436,7 +469,6 @@ def _auto_generate_narrative_dynamic(ovr: Dict[str, Any], style: str, tone: str)
     else:
         opening = tb["opening"] + "combining field-based verification, review of available project documentation, and qualitative engagement with relevant stakeholders."
 
-    # Field component
     field_bits: List[str] = []
     if direct_obs:
         field_bits.append("Direct on-site technical observation was used to verify workmanship, progress, and functionality.")
@@ -446,52 +478,35 @@ def _auto_generate_narrative_dynamic(ovr: Dict[str, Any], style: str, tone: str)
     if photos:
         field_bits.append("Geo-referenced photographic evidence was collected/reviewed to substantiate observed conditions.")
     else:
-        if style == "Detailed":
-            field_bits.append("Photographic evidence was limited; therefore, greater emphasis was placed on available in-person verification and documentation.")
-        else:
-            field_bits.append("Photographic evidence was limited; observations relied on available in-person verification inputs.")
+        field_bits.append(
+            "Photographic evidence was limited; observations relied on available in-person verification and documentation where applicable."
+            if style == "Detailed"
+            else "Photographic evidence was limited; observations relied on available in-person verification inputs."
+        )
 
     if gps:
         field_bits.append("GPS coordinates were verified/recorded to confirm site positioning and component alignment.")
     else:
-        if style == "Short":
-            field_bits.append("GPS verification was not emphasized.")
-        else:
-            field_bits.append("GPS verification was not emphasized; location confirmation relied on available site references and documentation where applicable.")
+        field_bits.append("GPS verification was not emphasized." if style == "Short" else "GPS verification was not emphasized; location confirmation relied on available site references and documentation where applicable.")
 
-    # Documentary component
     if any_docs:
         doc_phrase = _build_doc_review_phrase(ovr, style=style)
-        if doc_phrase:
-            doc_sentence = doc_phrase
-        else:
-            doc_sentence = "Project documentation was reviewed to validate compliance with approved specifications and contractual requirements."
+        doc_sentence = doc_phrase if doc_phrase else "Project documentation was reviewed to validate compliance with approved specifications and contractual requirements."
     else:
-        if style == "Short":
-            doc_sentence = "Documentary evidence was limited during the visit."
-        else:
-            doc_sentence = (
-                "Documentary evidence was limited during the visit; therefore, compliance verification relied more heavily on field observations and stakeholder inputs."
-            )
+        doc_sentence = "Documentary evidence was limited during the visit." if style == "Short" else "Documentary evidence was limited; therefore, compliance verification relied more heavily on field observations and stakeholder inputs."
 
-    # Stakeholder engagement
     if interviews:
-        if style == "Short":
-            stakeholder_sentence = "Key informant discussions were held to triangulate reported progress and operational arrangements."
-        else:
-            stakeholder_sentence = (
+        stakeholder_sentence = (
+            "Key informant discussions were held to triangulate reported progress and operational arrangements."
+            if style == "Short"
+            else (
                 "Semi-structured discussions were held with key informants (CDC members, implementing partner staff, and contractor personnel) "
                 "to triangulate reported progress, clarify technical decisions, and validate operation and maintenance arrangements."
             )
+        )
     else:
-        if style == "Short":
-            stakeholder_sentence = "Stakeholder engagement was limited."
-        else:
-            stakeholder_sentence = (
-                "Stakeholder engagement was limited; therefore, reported progress and operational arrangements were verified primarily through field and documentary checks."
-            )
+        stakeholder_sentence = "Stakeholder engagement was limited." if style == "Short" else "Stakeholder engagement was limited; therefore, reported progress and operational arrangements were verified primarily through field and documentary checks."
 
-    # Focus + closing
     focus = tb["focus"]
     closing = tb["closing"]
 
@@ -510,17 +525,12 @@ def _auto_generate(ovr: Dict[str, Any], style: str, tone: str) -> Tuple[List[str
 
 
 def _fingerprint_core(ovr: Dict[str, Any], style: str, tone: str) -> str:
-    # flags + controls (style/tone) affect auto
     parts = [f"{k}={int(bool(ovr.get(k)))}" for k, _ in FLAGS]
     parts.extend([f"style={_s(style)}", f"tone={_s(tone)}"])
     return _sha1("|".join(parts))
 
 
 def _compute_and_cache_auto_text(ovr: Dict[str, Any]) -> Tuple[List[str], str]:
-    """
-    ✅ Performance: generate auto text only when flags/style/tone change.
-    ✅ UX: if not confirmed and not dirty, keep editors synced to auto.
-    """
     ss = st.session_state
     fp = _fingerprint_core(ovr, style=_s(ss.get(SS_DCM_STYLE)), tone=_s(ss.get(SS_DCM_TONE)))
 
@@ -547,7 +557,6 @@ def _apply_template(template_name: str) -> None:
     ss[SS_DCM_TONE] = tpl.get("tone", UIConfig.DEFAULT_TONE)
     ss[SS_DCM_PREVIEW_MODE] = tpl.get("preview", UIConfig.DEFAULT_PREVIEW)
 
-    # Explicit action => safe to reset to auto
     ss[SS_DCM_HASH] = ""
     ss[SS_DCM_DIRTY_LIST] = False
     ss[SS_DCM_DIRTY_NARR] = False
@@ -580,43 +589,17 @@ def _sync_ovr_from_widget_state(ovr: Dict[str, Any], widget_key: str, flag_key: 
 # MAIN
 # =============================================================================
 def render_step(ctx: Tool6Context) -> bool:
-    """
-    Step 7 — Data Collection Methods (Executive-level UX like Step 6)
-    - Responsive layout (mobile/laptop/monitor)
-    - Sticky action bar (confirm + actions)
-    - Tabs: Draft / Insights / Controls (low scrolling)
-    - Dirty-state (list + narrative) prevents overwrite
-    - Confirm locks editors (professional behavior)
-    - Expanders + show-only-selected toggles
-    - Templates (style/tone/preview presets)
-    - One-click translation (pluggable translate_fn)
-    - Stores final into general_info_overrides:
-        D_methods_list_text
-        D_methods_narrative_text
-      and if translated:
-        D_methods_list_text (English/Persian/Dari)
-        D_methods_narrative_text (English/Persian/Dari)
-    """
-    _ = ctx
-    _inject_responsive_css()
+    _inject_standard_css()
     _ensure_state()
 
     ss = st.session_state
     ovr: Dict[str, Any] = ss.get("general_info_overrides", {}) or {}
 
-    st.subheader("Step 7 — Data Collection Methods")
-
     with st.container(border=True):
-        card_open(
-            "Data Collection Methods (Auto + Editable + Templates + Translate)",
-            subtitle="Select inputs, review/edit the text, and confirm to include in the report.",
-            variant="lg-variant-cyan",
-        )
-
         # =========================================================
-        # Sticky bar: actions + confirm (reduces scrolling)
+        # Sticky actions (standard aligned row)
         # =========================================================
-        st.markdown('<div class="t6-s7-sticky">', unsafe_allow_html=True)
+        st.markdown('<div class="t6-sticky">', unsafe_allow_html=True)
         a1, a2, a3, a4, a5 = st.columns([1.15, 1.15, 1.4, 1.2, 1.2], gap="small")
 
         with a1:
@@ -663,18 +646,21 @@ def render_step(ctx: Tool6Context) -> bool:
             )
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # Tabs (like Step 6)
+        # =========================================================
+        # Tabs
+        # =========================================================
         tab_draft, tab_insights, tab_controls = st.tabs(["Draft", "Insights", "Controls"])
 
         # =========================================================
-        # DRAFT TAB: toggles + editor + preview (low scroll)
+        # DRAFT TAB
         # =========================================================
         with tab_draft:
             left, right = st.columns([1.05, 1.0], gap="large")
 
-            # ---------------- LEFT: inputs ----------------
+            # ---------------- LEFT: toggles ----------------
             with left:
-                st.markdown("### 1) Select inputs")
+                st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+                st.markdown("<div class='t6-card-title'>1) Select inputs</div>", unsafe_allow_html=True)
 
                 show_only = bool(ss.get(SS_DCM_SHOW_ONLY_SELECTED, False))
 
@@ -686,10 +672,8 @@ def render_step(ctx: Tool6Context) -> bool:
                         wkey = _flag_widget_key(flag_key)
                         if wkey not in ss:
                             ss[wkey] = bool(ovr.get(flag_key, False))
-
                         if show_only and not bool(ss.get(wkey, False)):
                             continue
-
                         st.toggle(label, value=bool(ss.get(wkey, False)), key=wkey)
                         _sync_ovr_from_widget_state(ovr, wkey, flag_key)
 
@@ -698,26 +682,27 @@ def render_step(ctx: Tool6Context) -> bool:
                         wkey = _flag_widget_key(flag_key)
                         if wkey not in ss:
                             ss[wkey] = bool(ovr.get(flag_key, False))
-
                         if show_only and not bool(ss.get(wkey, False)):
                             continue
-
                         st.toggle(label, value=bool(ss.get(wkey, False)), key=wkey)
                         _sync_ovr_from_widget_state(ovr, wkey, flag_key)
 
-                st.caption("Tip: Auto text updates when selections or controls change (unless you edited/confirmed).")
+                st.markdown(
+                    "<div class='t6-subtle'>Tip: Auto text updates when selections or controls change (unless you edited/confirmed).</div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown("</div>", unsafe_allow_html=True)
 
             # ---------------- RIGHT: editor + preview ----------------
             with right:
-                st.markdown("### 2) Preview & edit")
-
                 auto_list, auto_narr = _compute_and_cache_auto_text(ovr)
+                locked = bool(ss.get(SS_CONFIRMED, False))
 
-                # current working texts
                 list_text_current = _s(ss.get(SS_LIST_TEXT)) or "\n".join(auto_list)
                 narr_text_current = _s(ss.get(SS_NARR_TEXT)) or auto_narr
 
-                locked = bool(ss.get(SS_CONFIRMED, False))
+                st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+                st.markdown("<div class='t6-card-title'>2) Preview & edit</div>", unsafe_allow_html=True)
 
                 e1, e2 = st.columns([1.0, 1.0], gap="small")
                 with e1:
@@ -729,7 +714,6 @@ def render_step(ctx: Tool6Context) -> bool:
                         key=_key("list_text"),
                         help="Each non-empty line becomes one numbered/bulleted item in the report.",
                         disabled=locked,
-                        label_visibility="visible",
                     )
                 with e2:
                     st.markdown("**Narrative (Editor)**")
@@ -739,92 +723,91 @@ def render_step(ctx: Tool6Context) -> bool:
                         height=UIConfig.NARR_EDITOR_HEIGHT,
                         key=_key("narr_text"),
                         disabled=locked,
-                        label_visibility="visible",
                     )
 
-                # Normalize
                 new_list_norm = "\n".join(_lines(new_list))
                 new_narr_norm = _split_paragraphs(new_narr)
 
                 ss[SS_LIST_TEXT] = new_list_norm
                 ss[SS_NARR_TEXT] = new_narr_norm
 
-                # Dirty detection (edited vs auto)
-                if _split_paragraphs(new_list_norm) != _split_paragraphs("\n".join(auto_list)):
-                    ss[SS_DCM_DIRTY_LIST] = True
-                else:
-                    ss[SS_DCM_DIRTY_LIST] = False
+                ss[SS_DCM_DIRTY_LIST] = _split_paragraphs(new_list_norm) != _split_paragraphs("\n".join(auto_list))
+                ss[SS_DCM_DIRTY_NARR] = _split_paragraphs(new_narr_norm) != _split_paragraphs(auto_narr)
 
-                if _split_paragraphs(new_narr_norm) != _split_paragraphs(auto_narr):
-                    ss[SS_DCM_DIRTY_NARR] = True
-                else:
-                    ss[SS_DCM_DIRTY_NARR] = False
-
-                # Metrics
                 w1, c1 = _word_char_count(new_list_norm)
                 w2, c2 = _word_char_count(new_narr_norm)
                 st.markdown(
-                    f"<div class='t6-s7-subtle'>Methods: {w1} words · {c1} chars &nbsp;&nbsp;|&nbsp;&nbsp; "
+                    f"<div class='t6-subtle'>Methods: {w1} words · {c1} chars &nbsp;&nbsp;|&nbsp;&nbsp; "
                     f"Narrative: {w2} words · {c2} chars</div>",
                     unsafe_allow_html=True,
                 )
 
-                # Preview
-                st.divider()
-                st.markdown("**Live Preview (Report-like)**")
-                with st.container(border=True):
-                    items = _lines(new_list_norm) or auto_list
-                    _render_methods_preview(items, mode=_s(ss.get(SS_DCM_PREVIEW_MODE)))
-                    st.markdown("---")
-                    st.write(_split_paragraphs(new_narr_norm) or auto_narr)
+                st.markdown("</div>", unsafe_allow_html=True)
 
-                # Diff
+                # Preview card
+                st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+                st.markdown("<div class='t6-card-title'>Live Preview (Report-like)</div>", unsafe_allow_html=True)
+                items = _lines(new_list_norm) or auto_list
+                _render_methods_preview(items, mode=_s(ss.get(SS_DCM_PREVIEW_MODE)))
+                st.markdown("---")
+                st.write(_split_paragraphs(new_narr_norm) or auto_narr)
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # Diff card (optional)
                 if bool(ss.get(SS_DCM_SHOW_DIFF, False)):
-                    st.divider()
-                    st.markdown("**Diff (Auto → Edited)**")
+                    st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+                    st.markdown("<div class='t6-card-title'>Diff (Auto → Edited)</div>", unsafe_allow_html=True)
                     diff_list = _simple_diff("\n".join(auto_list), new_list_norm)
                     diff_narr = _simple_diff(auto_narr, new_narr_norm)
                     with st.expander("Methods diff", expanded=False):
                         st.code(diff_list, language="text")
                     with st.expander("Narrative diff", expanded=False):
                         st.code(diff_narr, language="text")
+                    st.markdown("</div>", unsafe_allow_html=True)
 
-                # Lock info
                 if locked:
                     status_card("Locked", "This section is confirmed. Turn off Confirmed to edit again.", level="info")
 
         # =========================================================
-        # INSIGHTS TAB: small snapshot to reduce guesswork
+        # INSIGHTS TAB (aligned)
         # =========================================================
         with tab_insights:
-            st.markdown("### Snapshot")
+            st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-card-title'>Snapshot</div>", unsafe_allow_html=True)
+
             selected_flags = [(k, lbl) for k, lbl in FLAGS if bool(ovr.get(k))]
             c1, c2, c3 = st.columns([1.2, 1.2, 1.2], gap="small")
             c1.metric("Selected inputs", str(len(selected_flags)))
             c2.metric("Style", _s(ss.get(SS_DCM_STYLE)) or "—")
             c3.metric("Tone", _s(ss.get(SS_DCM_TONE)) or "—")
 
-            st.divider()
-            st.markdown("**Selected inputs (for traceability):**")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-card-title'>Selected inputs (traceability)</div>", unsafe_allow_html=True)
             if selected_flags:
                 for _, lbl in selected_flags:
                     st.markdown(f"- {lbl}")
             else:
                 st.info("No inputs selected. Auto text will fall back to a generic TPM statement.")
+            st.markdown("</div>", unsafe_allow_html=True)
 
-            st.divider()
-            st.markdown("**Auto draft currently generated from these settings:**")
+            st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-card-title'>Auto draft (current)</div>", unsafe_allow_html=True)
             auto_list, auto_narr = _compute_and_cache_auto_text(ovr)
             with st.expander("Auto methods", expanded=False):
                 st.code("\n".join(auto_list), language="text")
             with st.expander("Auto narrative", expanded=False):
                 st.code(auto_narr, language="text")
+            st.markdown("</div>", unsafe_allow_html=True)
 
         # =========================================================
-        # CONTROLS TAB: templates + style/tone/preview + translate
+        # CONTROLS TAB (aligned + cards)
         # =========================================================
         with tab_controls:
-            st.markdown("### Template Library")
+            st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-card-title'>Templates</div>", unsafe_allow_html=True)
+
             t1, t2, t3 = st.columns([2.2, 1.0, 1.0], gap="small")
             with t1:
                 tpl_name = st.selectbox(
@@ -839,19 +822,21 @@ def render_step(ctx: Tool6Context) -> bool:
                 if st.button("Apply Template", use_container_width=True, key=_key("tpl_apply")):
                     _apply_template(ss[SS_DCM_TEMPLATE])
                     _compute_and_cache_auto_text(ovr)
-                    # Explicit apply => reset editors to auto
                     ss[SS_LIST_TEXT] = "\n".join(ss.get(SS_DCM_AUTO_LIST, []) or [])
                     ss[SS_NARR_TEXT] = _s(ss.get(SS_DCM_AUTO_NARR))
                     status_card("Template applied", "Draft updated using the selected template.", level="success")
             with t3:
-                with st.popover("Template details", use_container_width=True):
+                with st.popover("Details", use_container_width=True):
                     tpl = TEMPLATE_LIBRARY.get(ss[SS_DCM_TEMPLATE], {})
                     st.write(f"Style: {tpl.get('style')}")
                     st.write(f"Tone: {tpl.get('tone')}")
                     st.write(f"Preview: {tpl.get('preview')}")
 
-            st.divider()
-            st.markdown("### Fine Controls")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-card-title'>Style / Tone / Preview</div>", unsafe_allow_html=True)
+
             c1, c2, c3 = st.columns([1.2, 1.2, 1.2], gap="small")
             with c1:
                 ss[SS_DCM_STYLE] = st.selectbox(
@@ -859,7 +844,6 @@ def render_step(ctx: Tool6Context) -> bool:
                     options=["Short", "Standard", "Detailed"],
                     index=["Short", "Standard", "Detailed"].index(_s(ss.get(SS_DCM_STYLE)) or UIConfig.DEFAULT_STYLE),
                     key=_key("style"),
-                    help="Affects the verbosity of methods + narrative.",
                 )
             with c2:
                 ss[SS_DCM_TONE] = st.selectbox(
@@ -867,7 +851,6 @@ def render_step(ctx: Tool6Context) -> bool:
                     options=["Neutral", "Formal", "Action-oriented"],
                     index=["Neutral", "Formal", "Action-oriented"].index(_s(ss.get(SS_DCM_TONE)) or UIConfig.DEFAULT_TONE),
                     key=_key("tone"),
-                    help="Affects the narrative voice and emphasis.",
                 )
             with c3:
                 ss[SS_DCM_PREVIEW_MODE] = st.selectbox(
@@ -889,8 +872,10 @@ def render_step(ctx: Tool6Context) -> bool:
                     st.code("\n".join(al), language="text")
                     st.code(an, language="text")
 
-            st.divider()
-            st.markdown("### One-click Translation")
+            st.markdown("</div>", unsafe_allow_html=True)
+
+            st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
+            st.markdown("<div class='t6-card-title'>Translation</div>", unsafe_allow_html=True)
 
             tr1, tr2, tr3, tr4 = st.columns([1.2, 1.2, 1.4, 1.2], gap="small")
             with tr1:
@@ -918,7 +903,6 @@ def render_step(ctx: Tool6Context) -> bool:
                         source_list = "\n".join(auto_list)
                         source_narr = auto_narr
 
-                    # Translate list + narrative separately (better quality)
                     t_list, warn1 = _translate_text(ctx, source_list, _s(ss.get(SS_DCM_TRANSLATE_TARGET)))
                     t_narr, warn2 = _translate_text(ctx, source_narr, _s(ss.get(SS_DCM_TRANSLATE_TARGET)))
 
@@ -926,14 +910,12 @@ def render_step(ctx: Tool6Context) -> bool:
                     if warn:
                         status_card("Translation not configured", warn, level="warning")
                     else:
-                        # Apply to editor (explicit user action)
                         ss[SS_LIST_TEXT] = "\n".join(_lines(t_list))
                         ss[SS_NARR_TEXT] = _split_paragraphs(t_narr)
                         ss[SS_DCM_DIRTY_LIST] = True
                         ss[SS_DCM_DIRTY_NARR] = True
                         ss[SS_CONFIRMED] = False
 
-                        # Save bilingual variant
                         tgt = _s(ss.get(SS_DCM_TRANSLATE_TARGET))
                         gi = ss.get("general_info_overrides", {}) or {}
                         gi[f"D_methods_list_text ({tgt})"] = ss[SS_LIST_TEXT]
@@ -945,12 +927,13 @@ def render_step(ctx: Tool6Context) -> bool:
             with tr4:
                 with st.popover("How to enable", use_container_width=True):
                     st.write(
-                        "To enable translation, provide a callable in:\n"
+                        "Provide a callable in:\n"
                         "st.session_state['tool6_translate_fn']\n\n"
                         "Signature:\n"
-                        "def translate_fn(text: str, target: str) -> str\n\n"
-                        "Then this button will translate instantly."
+                        "def translate_fn(text: str, target: str) -> str"
                     )
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
         # =========================================================
         # Final save to overrides + status
@@ -976,7 +959,5 @@ def render_step(ctx: Tool6Context) -> bool:
 
         card_close()
 
-    # Validation: must confirm + must have at least 1 method line (or auto list)
-    auto_list, _ = _compute_and_cache_auto_text(ovr)
-    items_final = _lines(_s(ss.get(SS_LIST_TEXT))) or auto_list
+    items_final = _lines(_s(ss.get(SS_LIST_TEXT))) or (ss.get(SS_DCM_AUTO_LIST, []) or [])
     return bool(ss.get(SS_CONFIRMED)) and bool(items_final)
