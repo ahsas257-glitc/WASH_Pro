@@ -765,17 +765,8 @@ def render_step(ctx: Tool6Context) -> bool:
     _ensure_state(ctx)
     ss = st.session_state
 
-    st.subheader("Step 6 — Executive Summary")
-
     with st.container(border=True):
-        card_open(
-            "Executive Summary (Auto + Editable + Responsive + Templates + Translate)",
-            subtitle=(
-                "Use templates for fast professional drafting, fine-tune controls, preview instantly, "
-                "and approve to lock for DOCX."
-            ),
-            variant="lg-variant-cyan",
-        )
+
 
         # Sticky action bar
         st.markdown('<div class="t6-s6-sticky">', unsafe_allow_html=True)
@@ -927,8 +918,6 @@ def render_step(ctx: Tool6Context) -> bool:
         # CONTROLS TAB (Templates + Style + Issues + Translation)
         # -------------------------
         with tab_controls:
-            # ---- Template library ----
-            st.markdown("### Template Library")
             t1, t2, t3 = st.columns([2.2, 1.0, 1.0], gap="small")
 
             with t1:
@@ -961,7 +950,6 @@ def render_step(ctx: Tool6Context) -> bool:
             st.divider()
 
             # ---- Fine controls ----
-            st.markdown("### Fine Controls")
             c1, c2, c3 = st.columns([1.2, 1.2, 1.2], gap="small")
 
             with c1:
@@ -1025,8 +1013,6 @@ def render_step(ctx: Tool6Context) -> bool:
 
             st.divider()
 
-            # ---- One-click translate ----
-            st.markdown("### One-click Translation")
             tr1, tr2, tr3, tr4 = st.columns([1.2, 1.2, 1.4, 1.2], gap="small")
 
             with tr1:
