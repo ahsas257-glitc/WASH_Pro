@@ -10,45 +10,61 @@ from typing import Any, Dict, List, Optional, Tuple, Callable
 from urllib.request import urlopen, Request
 
 import streamlit as st
-from PIL import Image, ImageEnhance
+from PIL import Image, ImageEnhance, ImageOps
 
 from src.Tools.utils.types import Tool6Context
 from design.components.base_tool_ui import card_open, card_close, status_card
 
-SS_AUDIO_THUMBS = "audio_thumbs"      # small bytes (optional)
-SS_AUDIO_LOCKS = "audio_picker_locked"  # per observation lock state (optional global)
 
 # =============================================================================
 # Session keys
 # =============================================================================
 SS_OBS = "tool6_obs_components"
-SS_PHOTO_BYTES = "photo_bytes"        # FULL bytes only for selected (report)
+SS_PHOTO_BYTES = "photo_bytes"        # FULL bytes only for selected
 SS_PHOTO_THUMBS = "photo_thumbs"      # THUMB bytes for UI
 SS_AUDIO_BYTES = "audio_bytes"
 SS_LAST_ADDED_COMP = "tool6_last_added_component_idx"
 
+# Image fetch cache (TTL)
+SS_IMG_CACHE = "tool6_img_cache"      # {url: {"ts": float, "ok": bool, "bytes": b, "msg": str}}
+SS_IMG_CACHE_CFG = "tool6_img_cache_cfg"
+
+# UI state per observation (persistent selection + lock)
+SS_PICK_SEL = "tool6_s3_sel"          # dict: {scope_key: [urls...]}
+SS_PICK_LOCK = "tool6_s3_lock"        # dict: {scope_key: bool}
+SS_PICK_FOCUS = "tool6_s3_focus"      # dict: {scope_key: bool}
+
+# Audio playlist per observation
+SS_AUDIO_PLAY = "tool6_s3_audio_play"  # dict: {scope_key: {"idx": int}}
 
 # =============================================================================
 # Google Sheet (Audio source)
 # =============================================================================
-AUDIO_SHEET_ID = "1XxWP-d3lIV4vSxjp-8fo-u9JW0QvsOBjbFkl2mQqApc"
+AUDIO_SHEET_ID = "1XxxWP-d3lIV4vSxjp-8fo-u9JW0QvsOBjbFkl2mQqApc".replace("xxx", "WP")  # keep your id
 AUDIO_SHEET_GID = 1945665091
 AUDIO_TPM_COL_NAME = "TPM_ID"
-
 
 # =============================================================================
 # UI / Performance constants
 # =============================================================================
-TILE = 120               # like Step4 small square feel
-GRID_COLS = 3            # like Step4
-THUMB_BOX = 220          # better contain canvas like Step4
-PREFETCH_LIMIT = 36      # Step4 prefetch visible set
+GRID_COLS = 3
+THUMB_BOX = 220
+HOVER_HD_MAXPX = 1920
+HOVER_HD_QUALITY = 88
 
+IMG_TTL_OK = 20 * 60
+IMG_TTL_FAIL = 90
+IMG_CACHE_MAX_ITEMS = 600
+IMG_MAX_MB = 25
+
+# Adaptive HD:
+HD_BUDGET_UNLOCKED = 60   # before Done: limit HD layers (fast)
+HD_BUDGET_LOCKED = 120    # after Done: selected-only, safe to allow more
 
 # =============================================================================
 # Titles
 # =============================================================================
-DEFAULT_OBSERVATION_TITLES: List[str] = [
+DEFAULT_OBSERVATION_TITLES: List[str] = list(dict.fromkeys([
     "Construction of bore well and well protection structure:",
     "Supply and installation of the solar system:",
     "Construction of 60 m3 reservoir:",
@@ -56,172 +72,126 @@ DEFAULT_OBSERVATION_TITLES: List[str] = [
     "Construction of boundary wall:",
     "Construction of guard room and latrine:",
     "Construction of stand taps:",
-]
-DEFAULT_OBSERVATION_TITLES = list(dict.fromkeys(DEFAULT_OBSERVATION_TITLES))
+]))
 
 
 # =============================================================================
 # Helpers
 # =============================================================================
-def _audio_card_html(label: str) -> str:
-    # فقط یک placeholder داخل کارت، پلیر را خود streamlit داخل col می‌گذاریم
-    cap = _s(label)
-    return (
-        f"<div class='t6-card'>"
-        f"  <div class='t6-audio-box'>"
-        f"    <div class='t6-audio-icon'>🔊</div>"
-        f"  </div>"
-        f"  <div class='t6-cap'>{cap}</div>"
-        f"</div>"
-    )
-
 def _s(v: Any) -> str:
     return "" if v is None else str(v).strip()
 
 
 def _k(*parts: Any) -> str:
     raw = ".".join(str(p) for p in parts)
-    h = hashlib.md5(raw.encode("utf-8")).hexdigest()[:10]
-    return f"t6.s3.{h}"
+    return "t6.s3." + hashlib.md5(raw.encode("utf-8")).hexdigest()
 
 
-def _download_bytes_urlopen(url: str, timeout: int = 25, max_mb: int = 40) -> Tuple[bool, Optional[bytes], str, str]:
-    """
-    Robust downloader for public/accessible URLs (handles redirects).
-    Returns: (ok, bytes, mime, message)
-
-    Notes:
-    - Uses stronger headers for services like SurveyCTO.
-    - Enforces a max download size to avoid huge downloads.
-    """
-    url = _s(url)
-    if not url:
-        return False, None, "", "Empty URL"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Connection": "keep-alive",
-        # Some hosts behave better with a referer:
-        "Referer": "https://act4performance.surveycto.com/",
-    }
-
-    try:
-        req = Request(url, headers=headers)
-        with urlopen(req, timeout=timeout) as resp:
-            mime = _s(resp.headers.get("Content-Type")).split(";")[0].strip()
-            clen = resp.headers.get("Content-Length")
-            if clen:
-                try:
-                    size = int(clen)
-                    if size > max_mb * 1024 * 1024:
-                        return False, None, mime, f"Audio too large ({size/1024/1024:.1f} MB)"
-                except Exception:
-                    pass
-
-            data = resp.read()
-            if data and len(data) > max_mb * 1024 * 1024:
-                return False, None, mime, f"Audio too large ({len(data)/1024/1024:.1f} MB)"
-
-            if not data:
-                return False, None, mime, "Downloaded 0 bytes"
-            return True, data, mime, "OK"
-
-    except Exception as e:
-        return False, None, "", f"Download failed: {e}"
+def _scope(ci: int, oi: int) -> str:
+    return f"c{ci}.o{oi}"
 
 
-# =============================================================================
-# CSS (MATCH Step4 look/behavior)
-# =============================================================================
 def _inject_css() -> None:
     st.markdown(
         f"""
-        <style>
-          [data-testid="stVerticalBlock"] {{ gap: 0.70rem; }}
+<style>
+  [data-testid="stVerticalBlock"] {{ gap: 0.70rem; }}
 
-          /* RTL grid like Step4 cover */
-          .t6-grid {{
-            direction: rtl;
-            display:grid;
-            grid-template-columns: repeat({GRID_COLS}, minmax(0, 1fr));
-            gap: 12px;
-            align-items: start;
-          }}
+  .t6-card {{
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 12px;
+    overflow: hidden;
+    background: rgba(255,255,255,0.02);
+  }}
 
-          .t6-card {{
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 12px;
-            overflow: hidden;
-            background: rgba(255,255,255,0.02);
-          }}
+  .t6-imgbox {{
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    background: rgba(0,0,0,0.08);
+    display: grid;
+    place-items: center;
+    position: relative;
+    overflow: hidden;
+  }}
 
-          /* ✅ SQUARE thumbnail area */
-          .t6-imgbox {{
-            width: 100%;
-            aspect-ratio: 1 / 1;               /* ✅ always square */
-            background: rgba(0,0,0,0.08);
-            display: grid;
-            place-items: center;
-          }}
+  .t6-imgbox img.t6-thumb {{
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    transition: transform 160ms ease, opacity 120ms ease;
+    transform: scale(1.0);
+    opacity: 1;
+  }}
 
-          /* ✅ image fits fully inside the square */
-          .t6-imgbox img {{
-            width: 100%;
-            height: 100%;
-            object-fit: contain;               /* ✅ no crop */
-            display: block;
-          }}
+  .t6-imgbox img.t6-hd {{
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+    opacity: 0;
+    transform: scale(1.04);
+    transition: opacity 120ms ease, transform 160ms ease;
+    will-change: transform, opacity;
+  }}
 
-          .t6-cap {{
-            padding: 8px 10px 0 10px;
-            font-size: 11px;
-            opacity: .86;
-            line-height: 1.2;
-            text-align: right;
-            min-height: 32px;
-            word-break: break-word;
-          }}
+  .t6-card:hover .t6-imgbox img.t6-thumb {{
+    transform: scale(1.08);
+    opacity: 0.08;
+  }}
 
-          /* ✅ spacing for buttons area under each card */
-          .t6-actions {{
-            padding: 10px 10px 12px 10px;
-          }}
+  .t6-card:hover .t6-imgbox img.t6-hd {{
+    opacity: 1;
+    transform: scale(1.14);
+  }}
 
-          .t6-box {{
-            border: 1px solid rgba(255,255,255,0.10);
-            border-radius: 14px;
-            padding: 14px;
-            background: rgba(255,255,255,0.02);
-            margin-top: 10px;
-            margin-bottom: 12px;
-          }}
+  .t6-cap {{
+    padding: 8px 10px 0 10px;
+    font-size: 11px;
+    opacity: .86;
+    line-height: 1.2;
+    text-align: right;
+    min-height: 32px;
+    word-break: break-word;
+  }}
 
-          .t6-obs-box {{
-            border: 1px solid rgba(255,255,255,0.10);
-            border-radius: 14px;
-            padding: 14px 14px 10px 14px;
-            background: rgba(255,255,255,0.02);
-            margin-top: 10px;
-            margin-bottom: 12px;
-          }}
-        </style>
-        """,
+  .t6-actions {{
+    padding: 10px 10px 12px 10px;
+  }}
+
+  .t6-obs-box {{
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 14px;
+    padding: 14px 14px 10px 14px;
+    background: rgba(255,255,255,0.02);
+    margin-top: 10px;
+    margin-bottom: 12px;
+  }}
+
+  .t6-bottombar {{
+    position: sticky;
+    bottom: 0;
+    z-index: 50;
+    padding: 10px 0 0 0;
+    backdrop-filter: blur(8px);
+  }}
+
+  .t6-bottombar-inner {{
+    border: 1px solid rgba(255,255,255,0.12);
+    background: rgba(15,15,18,0.60);
+    border-radius: 14px;
+    padding: 10px;
+  }}
+</style>
+""",
         unsafe_allow_html=True,
     )
 
 
-
-# =============================================================================
-# State
-# =============================================================================
 def _ensure_state() -> None:
     ss = st.session_state
-    ss.setdefault(SS_AUDIO_THUMBS, {})
-    if not isinstance(ss[SS_AUDIO_THUMBS], dict):
-        ss[SS_AUDIO_THUMBS] = {}
-
     ss.setdefault(SS_OBS, [])
     if not isinstance(ss[SS_OBS], list):
         ss[SS_OBS] = []
@@ -240,6 +210,33 @@ def _ensure_state() -> None:
 
     ss.setdefault(SS_LAST_ADDED_COMP, None)
 
+    ss.setdefault(SS_IMG_CACHE, {})
+    if not isinstance(ss[SS_IMG_CACHE], dict):
+        ss[SS_IMG_CACHE] = {}
+
+    ss.setdefault(SS_IMG_CACHE_CFG, {
+        "ttl_ok": IMG_TTL_OK,
+        "ttl_fail": IMG_TTL_FAIL,
+        "max_items": IMG_CACHE_MAX_ITEMS,
+        "max_mb": IMG_MAX_MB,
+    })
+
+    ss.setdefault(SS_PICK_SEL, {})
+    if not isinstance(ss[SS_PICK_SEL], dict):
+        ss[SS_PICK_SEL] = {}
+
+    ss.setdefault(SS_PICK_LOCK, {})
+    if not isinstance(ss[SS_PICK_LOCK], dict):
+        ss[SS_PICK_LOCK] = {}
+
+    ss.setdefault(SS_PICK_FOCUS, {})
+    if not isinstance(ss[SS_PICK_FOCUS], dict):
+        ss[SS_PICK_FOCUS] = {}
+
+    ss.setdefault(SS_AUDIO_PLAY, {})
+    if not isinstance(ss[SS_AUDIO_PLAY], dict):
+        ss[SS_AUDIO_PLAY] = {}
+
 
 def _ensure_component_schema(c: Dict[str, Any]) -> Dict[str, Any]:
     c.setdefault("comp_id", "")
@@ -254,8 +251,8 @@ def _ensure_obs_schema(it: Dict[str, Any]) -> Dict[str, Any]:
     it.setdefault("title_selected", "")
     it.setdefault("title_custom", "")
     it.setdefault("audio_url", "")
-    it.setdefault("photos", [])  # [{"url":..., "text":...}]
-    it.setdefault("photo_picker_locked", False)  # ✅ Step4-like lock
+    it.setdefault("photos", [])
+    it.setdefault("photo_picker_locked", False)
     return it
 
 
@@ -268,41 +265,29 @@ def _obs_title_raw(it: Dict[str, Any]) -> str:
 
 def _numbered_title(section_no: str, global_idx_1based: int, raw_title: str) -> str:
     t = _s(raw_title)
-    if not t:
-        return ""
-    return f"{section_no}.{global_idx_1based}. {t}"
+    return f"{section_no}.{global_idx_1based}. {t}" if t else ""
 
 
 def _normalize_photos(selected_urls: List[str], old_photos: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-    old_map = {
-        _s(p.get("url")): _s(p.get("text"))
-        for p in (old_photos or [])
-        if isinstance(p, dict) and _s(p.get("url"))
-    }
-    return [{"url": u, "text": old_map.get(u, "")} for u in selected_urls]
+    old_map = {_s(p.get("url")): _s(p.get("text")) for p in (old_photos or []) if isinstance(p, dict) and _s(p.get("url"))}
+    return [{"url": u, "text": old_map.get(u, "")} for u in (selected_urls or [])]
 
 
 # =============================================================================
 # Mutations
 # =============================================================================
 def _add_component() -> None:
-    ss = st.session_state
-    comps = ss.get(SS_OBS, [])
+    comps = st.session_state.get(SS_OBS, [])
     if not isinstance(comps, list):
         comps = []
-
-    comps.append(
-        _ensure_component_schema(
-            {
-                "comp_id": "",
-                "title": "",
-                "observations": [_ensure_obs_schema({})],
-                "observations_valid": [],
-            }
-        )
-    )
-    ss[SS_OBS] = comps
-    ss[SS_LAST_ADDED_COMP] = len(comps) - 1
+    comps.append(_ensure_component_schema({
+        "comp_id": "",
+        "title": "",
+        "observations": [_ensure_obs_schema({})],
+        "observations_valid": [],
+    }))
+    st.session_state[SS_OBS] = comps
+    st.session_state[SS_LAST_ADDED_COMP] = len(comps) - 1
 
 
 def _remove_component(idx: int) -> None:
@@ -342,8 +327,17 @@ def _remove_observation(comp_idx: int, obs_idx: int) -> None:
     st.session_state[SS_LAST_ADDED_COMP] = comp_idx
 
 
+def _clear_all() -> None:
+    st.session_state[SS_OBS] = []
+    st.session_state[SS_LAST_ADDED_COMP] = None
+    st.session_state[SS_PICK_SEL] = {}
+    st.session_state[SS_PICK_LOCK] = {}
+    st.session_state[SS_PICK_FOCUS] = {}
+    st.session_state[SS_AUDIO_PLAY] = {}
+
+
 # =============================================================================
-# Photo-only URL filter (ONLY IMAGES)
+# Photo URLs filter
 # =============================================================================
 IMG_EXT = re.compile(r"\.(jpg|jpeg|png|webp|gif|bmp|tif|tiff)(\?|#|$)", re.I)
 
@@ -354,31 +348,200 @@ def _only_images(urls: List[str]) -> List[str]:
         u = _s(u)
         if not u:
             continue
-        if IMG_EXT.search(u):
+        if IMG_EXT.search(u) or "googleusercontent.com" in u or "lh3.googleusercontent.com" in u:
             out.append(u)
-            continue
-        if "googleusercontent.com" in u or "lh3.googleusercontent.com" in u:
-            out.append(u)
-            continue
     return list(dict.fromkeys(out))
 
 
 # =============================================================================
-# Audio helpers (unchanged)
+# fetch_image TTL cache wrapper
+# =============================================================================
+def _fetch_image_cached(url: str, *, fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]]) -> Tuple[bool, Optional[bytes], str]:
+    url = _s(url)
+    if not url:
+        return False, None, "Empty URL"
+
+    ss = st.session_state
+    cache: Dict[str, Dict[str, Any]] = ss.get(SS_IMG_CACHE, {}) or {}
+    cfg = ss.get(SS_IMG_CACHE_CFG, {}) or {}
+
+    ttl_ok = int(cfg.get("ttl_ok", IMG_TTL_OK))
+    ttl_fail = int(cfg.get("ttl_fail", IMG_TTL_FAIL))
+    max_items = int(cfg.get("max_items", IMG_CACHE_MAX_ITEMS))
+    max_mb = int(cfg.get("max_mb", IMG_MAX_MB))
+
+    now = time.time()
+    hit = cache.get(url)
+    if isinstance(hit, dict):
+        ts = float(hit.get("ts") or 0.0)
+        ok = bool(hit.get("ok"))
+        age = now - ts
+        if ok and age < ttl_ok:
+            b = hit.get("bytes")
+            return True, (bytes(b) if isinstance(b, (bytes, bytearray)) else None), _s(hit.get("msg") or "OK")
+        if (not ok) and age < ttl_fail:
+            return False, None, _s(hit.get("msg") or "Recently failed")
+
+    if len(cache) > max_items:
+        items = sorted(cache.items(), key=lambda kv: float((kv[1] or {}).get("ts") or 0.0))
+        drop_n = max(1, int(len(items) * 0.25))
+        for k, _ in items[:drop_n]:
+            cache.pop(k, None)
+
+    ok, b, msg = fetch_image(url)
+    if ok and b:
+        if len(b) > max_mb * 1024 * 1024:
+            cache[url] = {"ts": now, "ok": False, "bytes": None, "msg": f"Image too large (> {max_mb}MB)"}
+            ss[SS_IMG_CACHE] = cache
+            return False, None, f"Image too large (> {max_mb}MB)"
+        cache[url] = {"ts": now, "ok": True, "bytes": b, "msg": "OK"}
+        ss[SS_IMG_CACHE] = cache
+        return True, b, "OK"
+
+    cache[url] = {"ts": now, "ok": False, "bytes": None, "msg": _s(msg) or "Fetch failed"}
+    ss[SS_IMG_CACHE] = cache
+    return False, None, _s(msg) or "Fetch failed"
+
+
+# =============================================================================
+# Thumbs + Hover HD
+# =============================================================================
+def _make_thumb_contain(b: bytes, *, box: int = THUMB_BOX, quality: int = 82) -> Optional[bytes]:
+    try:
+        img = Image.open(BytesIO(b))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        img = ImageEnhance.Contrast(img).enhance(0.95)
+        img = ImageEnhance.Brightness(img).enhance(0.97)
+        img.thumbnail((box, box), Image.Resampling.LANCZOS)
+
+        bg = Image.new("RGB", (box, box), (32, 32, 36))
+        w, h = img.size
+        bg.paste(img, ((box - w) // 2, (box - h) // 2))
+
+        out = BytesIO()
+        bg.save(out, format="JPEG", quality=quality, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def _make_hover_hd(b: bytes, *, max_px: int = HOVER_HD_MAXPX, quality: int = HOVER_HD_QUALITY) -> Optional[bytes]:
+    try:
+        img = Image.open(BytesIO(b))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        w, h = img.size
+        m = max(w, h)
+        if m > max_px:
+            scale = max_px / float(m)
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=quality, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False, max_entries=8192)
+def _b64_bytes(data: bytes) -> str:
+    return base64.b64encode(data).decode("utf-8")
+
+
+def _card_html_with_hover(thumb_bytes: Optional[bytes], hd_bytes: Optional[bytes], caption: str) -> str:
+    cap = _s(caption)
+
+    if not thumb_bytes:
+        return (
+            f"<div class='t6-card'>"
+            f"  <div class='t6-imgbox'></div>"
+            f"  <div class='t6-cap'>{cap}</div>"
+            f"</div>"
+        )
+
+    b64t = _b64_bytes(thumb_bytes)
+    thumb_tag = f"<img class='t6-thumb' loading='lazy' src='data:image/jpeg;base64,{b64t}'/>"
+
+    hd_tag = ""
+    if hd_bytes:
+        b64h = _b64_bytes(hd_bytes)
+        hd_tag = f"<img class='t6-hd' loading='lazy' src='data:image/jpeg;base64,{b64h}'/>"
+
+    return (
+        f"<div class='t6-card'>"
+        f"  <div class='t6-imgbox'>"
+        f"    {thumb_tag}"
+        f"    {hd_tag}"
+        f"  </div>"
+        f"  <div class='t6-cap'>{cap}</div>"
+        f"</div>"
+    )
+
+
+def _fetch_thumb_and_optional_hd(
+    url: str,
+    *,
+    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+    want_hd: bool,
+) -> Tuple[Optional[bytes], Optional[bytes]]:
+    url = _s(url)
+    if not url:
+        return None, None
+
+    ss = st.session_state
+    thumbs: Dict[str, bytes] = ss.get(SS_PHOTO_THUMBS, {}) or {}
+
+    th = thumbs.get(url)
+    hd: Optional[bytes] = None
+
+    # thumb missing => download once (cached), create thumb (and maybe hd)
+    if not th:
+        ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+        if ok and b:
+            th = _make_thumb_contain(b)
+            if th:
+                thumbs[url] = th
+                ss[SS_PHOTO_THUMBS] = thumbs
+            if want_hd:
+                hd = _make_hover_hd(b)
+        return th, hd
+
+    # thumb exists, need hd => download (cached) then hd
+    if want_hd:
+        ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+        if ok and b:
+            hd = _make_hover_hd(b)
+
+    return th, hd
+
+
+def _ensure_full_bytes_selected(url: str, *, fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]]) -> None:
+    url = _s(url)
+    if not url:
+        return
+    ss = st.session_state
+    pb: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
+    if url in pb and pb[url]:
+        return
+    ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+    if ok and b:
+        pb[url] = b
+        ss[SS_PHOTO_BYTES] = pb
+
+
+# =============================================================================
+# Audio helpers (playlist in-app)
 # =============================================================================
 _AUD_URL_RE = re.compile(r"\.(mp3|wav|m4a|aac|ogg|opus|flac)(\?|#|$)", re.IGNORECASE)
 
 
 def _looks_like_audio_url(url: str) -> bool:
-    u = _s(url)
-    if not u:
+    low = _s(url).lower()
+    if not low:
         return False
-    low = u.lower()
     if _AUD_URL_RE.search(low):
         return True
-    if "submission-attachment" in low and ("aac" in low or "m4a" in low or "mp3" in low or "wav" in low):
+    if "submission-attachment" in low and any(x in low for x in ("aac", "m4a", "mp3", "wav", "ogg", "opus", "flac")):
         return True
-    if "audio" in low or "voice" in low or "record" in low:
+    if any(x in low for x in ("audio", "voice", "record")):
         return True
     return False
 
@@ -402,55 +565,6 @@ def _guess_audio_mime(url: str, fallback: str = "audio/aac") -> str:
     return fallback
 
 
-def _fetch_and_cache_audio(
-    url: str,
-    *,
-    fetch_audio: Optional[Callable[[str], Tuple[bool, Optional[bytes], str, str]]],
-) -> Tuple[Optional[bytes], str]:
-    """
-    Always attempts to download and cache audio bytes, then play from bytes.
-    Returns (bytes, mime). If bytes is None, caller should show an error (NOT play from URL).
-    """
-    url = _s(url)
-    if not url:
-        return None, ""
-
-    ss = st.session_state
-    audio_cache: Dict[str, Dict[str, Any]] = ss.get(SS_AUDIO_BYTES, {}) or {}
-
-    # cache schema: { url: {"bytes": b"...", "mime": "audio/mp4"} }
-    cached = audio_cache.get(url) or {}
-    if isinstance(cached, dict) and cached.get("bytes"):
-        return cached["bytes"], _s(cached.get("mime")) or _guess_audio_mime(url)
-
-    # 1) Try provided fetch_audio (if exists)
-    if fetch_audio is not None:
-        try:
-            ok, b, _msg, mime = fetch_audio(url)
-            if ok and b:
-                mime_clean = (_s(mime).split(";")[0].strip() or _guess_audio_mime(url))
-                audio_cache[url] = {"bytes": b, "mime": mime_clean}
-                ss[SS_AUDIO_BYTES] = audio_cache
-                return b, mime_clean
-        except Exception:
-            pass
-
-    # 2) Fallback: robust urlopen downloader
-    ok2, b2, mime2, msg2 = _download_bytes_urlopen(url, timeout=25, max_mb=40)
-    if ok2 and b2:
-        mime_clean = (_s(mime2).split(";")[0].strip() or _guess_audio_mime(url))
-        audio_cache[url] = {"bytes": b2, "mime": mime_clean}
-        ss[SS_AUDIO_BYTES] = audio_cache
-        return b2, mime_clean
-
-    # If download failed, we return None to avoid playing by URL (private links often fail)
-    return None, _guess_audio_mime(url)
-
-
-
-# =============================================================================
-# Google Sheet audio lookup (unchanged)
-# =============================================================================
 def _get_google_sheets_service():
     try:
         from google.oauth2 import service_account
@@ -494,10 +608,7 @@ def _read_sheet_values_api(spreadsheet_id: str, sheet_title: str) -> List[List[s
     try:
         resp = svc.spreadsheets().values().get(spreadsheetId=spreadsheet_id, range=rng).execute()
         vals = resp.get("values") or []
-        out: List[List[str]] = []
-        for row in vals:
-            out.append([_s(x) for x in (row or [])])
-        return out
+        return [[_s(x) for x in (row or [])] for row in vals]
     except Exception:
         return []
 
@@ -543,7 +654,7 @@ def _discover_audio_from_google_sheet_by_tpm_id(tpm_id: str) -> Tuple[List[str],
                                 if u not in label_by_url:
                                     urls.append(u)
                                     label_by_url[u] = col_name or "Audio"
-                        return urls, label_by_url, "Audio loaded from Google Sheet (API)."
+                        return urls, label_by_url, "Audio loaded from Google Sheet."
 
     values = _read_sheet_values_public_csv(AUDIO_SHEET_ID, AUDIO_SHEET_GID)
     if not values or len(values) < 2:
@@ -578,7 +689,6 @@ def _discover_audio_from_google_sheet_by_tpm_id(tpm_id: str) -> Tuple[List[str],
 
 def _discover_audio(ctx: Tool6Context) -> Tuple[List[str], Dict[str, str], str]:
     tpm_id = _s(getattr(ctx, "tpm_id", ""))
-
     sheet_urls, sheet_labels, msg = _discover_audio_from_google_sheet_by_tpm_id(tpm_id)
     if sheet_urls:
         return sheet_urls, sheet_labels, msg
@@ -596,192 +706,279 @@ def _discover_audio(ctx: Tool6Context) -> Tuple[List[str], Dict[str, str], str]:
                 urls.append(u)
                 label_by_url[u] = field or "Audio"
         if urls:
-            return urls, label_by_url, "Audio loaded from ctx.audios (fallback)."
+            return urls, label_by_url, "Audio loaded from ctx.audios."
 
     return [], {}, msg
 
 
-# =============================================================================
-# Thumbs (MATCH Step4: contain + anti-glare + dark bg)
-# =============================================================================
-def _make_thumb_contain(b: bytes, *, box: int = THUMB_BOX, quality: int = 82) -> Optional[bytes]:
-    try:
-        img = Image.open(BytesIO(b)).convert("RGB")
-
-        img = ImageEnhance.Contrast(img).enhance(0.95)
-        img = ImageEnhance.Brightness(img).enhance(0.97)
-
-        img.thumbnail((box, box), Image.Resampling.LANCZOS)
-
-        bg = Image.new("RGB", (box, box), (32, 32, 36))
-        w, h = img.size
-        bg.paste(img, ((box - w) // 2, (box - h) // 2))
-
-        out = BytesIO()
-        bg.save(out, format="JPEG", quality=quality, optimize=True)
-        return out.getvalue()
-    except Exception:
-        return None
-
-
-def _thumb_html(thumb_bytes: bytes, caption: str) -> str:
-    b64 = base64.b64encode(thumb_bytes).decode("utf-8")
-    cap = _s(caption)
-    return (
-        f"<div class='t6-card'>"
-        f"  <div class='t6-imgbox'>"
-        f"    <img src='data:image/jpeg;base64,{b64}'/>"
-        f"  </div>"
-        f"  <div class='t6-cap'>{cap}</div>"
-        f"</div>"
-    )
-
-
-
-def _fetch_thumb_only(
-    url: str,
+@st.fragment
+def _audio_playlist_block(
     *,
-    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+    audio_urls: List[str],
+    audio_label_by_url: Dict[str, str],
+    source_msg: str,
+    it: Dict[str, Any],
+    scope_key: str,
 ) -> None:
-    url = _s(url)
-    if not url:
+    if not audio_urls:
+        it["audio_url"] = ""
+        st.info(source_msg or "No audio links found.")
         return
+
+    st.caption(source_msg)
 
     ss = st.session_state
-    thumbs: Dict[str, bytes] = ss.get(SS_PHOTO_THUMBS, {}) or {}
-    if url in thumbs and thumbs[url]:
-        return
+    play = (ss.get(SS_AUDIO_PLAY) or {})
+    if scope_key not in play or not isinstance(play.get(scope_key), dict):
+        play[scope_key] = {"idx": 0}
+        ss[SS_AUDIO_PLAY] = play
 
-    ok, b, _msg = fetch_image(url)
-    if ok and b:
-        th = _make_thumb_contain(b)
-        if th:
-            thumbs[url] = th
-            ss[SS_PHOTO_THUMBS] = thumbs
+    idx = int(play[scope_key].get("idx") or 0)
+    idx = max(0, min(idx, len(audio_urls) - 1))
+
+    # If it has a selected url, sync index
+    cur_audio = _s(it.get("audio_url"))
+    if cur_audio in audio_urls:
+        idx = audio_urls.index(cur_audio)
+
+    c1, c2, c3 = st.columns([1, 2, 1], gap="small")
+    with c1:
+        if st.button("⏮ Prev", use_container_width=True, key=_k("aud_prev", scope_key)):
+            idx = (idx - 1) % len(audio_urls)
+    with c3:
+        if st.button("Next ⏭", use_container_width=True, key=_k("aud_next", scope_key)):
+            idx = (idx + 1) % len(audio_urls)
+
+    with c2:
+        pick = st.selectbox(
+            "Audio playlist",
+            options=list(range(len(audio_urls))),
+            index=idx,
+            format_func=lambda i: _s(audio_label_by_url.get(audio_urls[i], f"Track {i+1}")),
+            key=_k("aud_pick", scope_key),
+        )
+        idx = int(pick)
+
+    play[scope_key]["idx"] = idx
+    ss[SS_AUDIO_PLAY] = play
+
+    it["audio_url"] = audio_urls[idx]
+    st.audio(it["audio_url"], format=_guess_audio_mime(it["audio_url"]))
 
 
-def _ensure_full_bytes_selected(
-    url: str,
-    *,
-    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
-) -> None:
-    """
-    ✅ Full bytes فقط برای عکس‌های انتخاب‌شده (برای گزارش).
-    """
-    url = _s(url)
-    if not url:
-        return
+# =============================================================================
+# Picker: persistent Select/Remove + Done hides others
+# =============================================================================
+def _sel_get(scope_key: str) -> List[str]:
     ss = st.session_state
-    photo_bytes: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
-    if url in photo_bytes and photo_bytes[url]:
-        return
-
-    ok, b, _msg = fetch_image(url)
-    if ok and b:
-        photo_bytes[url] = b
-        ss[SS_PHOTO_BYTES] = photo_bytes
+    d = ss.get(SS_PICK_SEL, {}) or {}
+    v = d.get(scope_key, [])
+    if isinstance(v, list):
+        return [_s(x) for x in v if _s(x)]
+    return []
 
 
-# =============================================================================
-# Step4-like Picker (Select/Remove + Done/Change + show selected only)
-# =============================================================================
-def _render_photo_picker_step4_style(
+def _sel_set(scope_key: str, urls: List[str]) -> None:
+    ss = st.session_state
+    d = ss.get(SS_PICK_SEL, {}) or {}
+    d[scope_key] = list(dict.fromkeys([_s(x) for x in (urls or []) if _s(x)]))
+    ss[SS_PICK_SEL] = d
+
+
+def _lock_get(scope_key: str) -> bool:
+    ss = st.session_state
+    d = ss.get(SS_PICK_LOCK, {}) or {}
+    return bool(d.get(scope_key, False))
+
+
+def _lock_set(scope_key: str, v: bool) -> None:
+    ss = st.session_state
+    d = ss.get(SS_PICK_LOCK, {}) or {}
+    d[scope_key] = bool(v)
+    ss[SS_PICK_LOCK] = d
+
+
+def _focus_get(scope_key: str) -> bool:
+    ss = st.session_state
+    d = ss.get(SS_PICK_FOCUS, {}) or {}
+    return bool(d.get(scope_key, True))
+
+
+def _focus_set(scope_key: str, v: bool) -> None:
+    ss = st.session_state
+    d = ss.get(SS_PICK_FOCUS, {}) or {}
+    d[scope_key] = bool(v)
+    ss[SS_PICK_FOCUS] = d
+
+
+def _render_photo_picker(
     *,
     urls: List[str],
     labels: Dict[str, str],
-    selected_urls: List[str],
     fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
-    locked_flag: bool,
     scope_key: str,
 ) -> Tuple[List[str], bool]:
     urls = [u for u in (urls or []) if _s(u)]
-    thumbs: Dict[str, bytes] = st.session_state.get(SS_PHOTO_THUMBS, {}) or {}
 
-    def get_label(u: str) -> str:
+    def lab(u: str) -> str:
         return _s(labels.get(u, u))
 
-    # ✅ multi-select state (preserve original order)
-    selected_set = set([u for u in (selected_urls or []) if u in urls])
-    selected = [u for u in urls if u in selected_set]
+    selected = [u for u in _sel_get(scope_key) if u in urls]
+    selected_set = set(selected)
 
-    is_locked_row = bool(locked_flag and selected)
+    locked = _lock_get(scope_key)
+    focus_selected = _focus_get(scope_key)
 
-    # Header
-    h1, h2, h3 = st.columns([1, 1, 1])
+    # If locked -> show only selected
+    show_urls = selected if locked else (selected if (selected and focus_selected) else urls)
+
+    # Adaptive HD budget (fast)
+    hd_budget = (HD_BUDGET_LOCKED if locked else HD_BUDGET_UNLOCKED)
+    hd_budget = min(hd_budget, len(show_urls))
+    hd_set = set(show_urls[:hd_budget])
+
+    # Header row
+    h1, h2, h3 = st.columns([1.0, 1.2, 1.0], gap="small")
     with h1:
-        st.caption(f"Total: {len(urls)}")
-    with h2:
         st.caption(f"Selected: {len(selected)}")
+    with h2:
+        if (not locked) and selected:
+            _focus_set(scope_key, st.toggle("Focus selected", value=focus_selected, key=_k("focus", scope_key)))
     with h3:
-        if is_locked_row and selected:
-            if st.button("Change selection", key=_k("chg", scope_key), use_container_width=True):
-                is_locked_row = False
+        if locked and selected:
+            if st.button("Edit", use_container_width=True, key=_k("unlock", scope_key)):
+                _lock_set(scope_key, False)
+                _focus_set(scope_key, False)
                 st.rerun()
 
-    # show all when unlocked, only selected when locked
-    show_urls = selected if (is_locked_row and selected) else urls
-
-    # prefetch thumbs
-    for u in show_urls[:PREFETCH_LIMIT]:
-        if u not in thumbs:
-            _fetch_thumb_only(u, fetch_image=fetch_image)
-            thumbs = st.session_state.get(SS_PHOTO_THUMBS, {}) or {}
-
-    # Grid
     cols = GRID_COLS
     for i in range(0, len(show_urls), cols):
         row = show_urls[i:i + cols]
-        columns = st.columns(cols)
-        for col, url in zip(columns, row + [None] * (cols - len(row))):
+        columns = st.columns(cols, gap="small")
+
+        for col, url in zip(columns, row):
             with col:
-                if not url:
+                want_hd = url in hd_set
+                th, hd = _fetch_thumb_and_optional_hd(url, fetch_image=fetch_image, want_hd=want_hd)
+                st.markdown(_card_html_with_hover(th, hd, lab(url)), unsafe_allow_html=True)
+
+                if locked:
                     continue
 
-                tb = thumbs.get(url)
-                if tb:
-                    st.markdown(_thumb_html(tb, get_label(url)), unsafe_allow_html=True)
-                else:
-                    st.caption("Preview unavailable")
-                    st.caption(get_label(url))
+                st.markdown("<div class='t6-actions'>", unsafe_allow_html=True)
 
-                is_selected = url in selected_set
+                is_sel = (url in selected_set)
+                btn_label = "Remove" if is_sel else "Select"
+                url_index = urls.index(url)  # stable index inside urls list
+                if st.button(btn_label, use_container_width=True, key=_k("selbtn", scope_key, url_index)):
 
-                # ✅ can Select many, and Remove any time (until locked)
-                if not is_locked_row:
-                    st.markdown("<div class='t6-actions'>", unsafe_allow_html=True)
-
-                    if not is_selected:
-                        if st.button("Select", key=_k("sel", scope_key, url), use_container_width=True):
-                            selected_set.add(url)
-                            selected = [u for u in urls if u in selected_set]  # keep original order
-                            st.rerun()
+                    if is_sel:
+                        selected_set.discard(url)
                     else:
-                        if st.button("Remove", key=_k("rm", scope_key, url), use_container_width=True):
-                            selected_set.discard(url)
-                            selected = [u for u in urls if u in selected_set]
-                            st.rerun()
+                        selected_set.add(url)
 
-                    st.markdown("</div>", unsafe_allow_html=True)
+                    # keep original order of urls
+                    new_sel = [u for u in urls if u in selected_set]
+                    _sel_set(scope_key, new_sel)
+                    st.rerun()
 
-    # Done selecting
-    if not is_locked_row:
-        if st.button(
-            "✅ Done selecting",
-            use_container_width=True,
-            disabled=(len(selected) == 0),
-            key=_k("done", scope_key),
-        ):
-            # ✅ cache full bytes only for selected
-            for u in selected:
-                _ensure_full_bytes_selected(u, fetch_image=fetch_image)
+                st.markdown("</div>", unsafe_allow_html=True)
 
-            is_locked_row = True
-            st.rerun()
+    selected = [u for u in urls if u in set(_sel_get(scope_key))]
 
-    return selected, is_locked_row
+    if not locked:
+        c1, c2 = st.columns([1, 1], gap="small")
+        with c1:
+            if st.button("Done", use_container_width=True, disabled=(len(selected) == 0), key=_k("done", scope_key)):
+                for u in selected:
+                    _ensure_full_bytes_selected(u, fetch_image=fetch_image)
+                _lock_set(scope_key, True)
+                st.rerun()
+        with c2:
+            if selected and st.button("Show all", use_container_width=True, key=_k("showall", scope_key)):
+                _focus_set(scope_key, False)
+                st.rerun()
+
+    return selected, locked
+
 
 # =============================================================================
-# Build valid observations global
+# Notes: right image, left text (fast + full quality)
+# =============================================================================
+def _sync_photo_text(ci: int, oi: int, pj: int, widget_key: str) -> None:
+    ss = st.session_state
+    comps = ss.get(SS_OBS, [])
+    if not (isinstance(comps, list) and 0 <= ci < len(comps)):
+        return
+
+    comp = _ensure_component_schema(comps[ci])
+    obs = comp.get("observations") or []
+    if not (0 <= oi < len(obs)):
+        return
+
+    it = _ensure_obs_schema(obs[oi])
+    photos = it.get("photos") or []
+    if not (0 <= pj < len(photos)):
+        return
+
+    if isinstance(photos[pj], dict):
+        photos[pj]["text"] = _s(ss.get(widget_key))
+        it["photos"] = photos
+        obs[oi] = it
+        comp["observations"] = obs
+        comps[ci] = comp
+        ss[SS_OBS] = comps
+
+
+@st.fragment
+def _photo_notes_block(
+    *,
+    it: Dict[str, Any],
+    photo_labels: Dict[str, str],
+    ci: int,
+    oi: int,
+    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+) -> None:
+    if not it.get("photos"):
+        return
+
+    ss = st.session_state
+    pb: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
+
+    for pj, ph in enumerate(it["photos"]):
+        u = _s(ph.get("url"))
+        lab = _s(photo_labels.get(u, u))
+
+        if u:
+            _ensure_full_bytes_selected(u, fetch_image=fetch_image)
+            pb = ss.get(SS_PHOTO_BYTES, {}) or {}
+
+        # Left = text, Right = image
+        col_text, col_img = st.columns([2, 1], gap="small")
+        with col_img:
+            b = pb.get(u)
+            if b:
+                st.image(b, caption=lab, use_container_width=True)
+            else:
+                st.caption(lab)
+                st.caption("Image unavailable.")
+
+        with col_text:
+            key_txt = _k("photo_obs", ci, oi, pj)
+            if key_txt not in ss:
+                ss[key_txt] = _s(ph.get("text"))
+
+            st.text_area(
+                "Observation",
+                key=key_txt,
+                height=110,
+                placeholder="Write observation for this photo...",
+                on_change=lambda ci=ci, oi=oi, pj=pj, key_txt=key_txt: _sync_photo_text(ci, oi, pj, key_txt),
+            )
+
+
+# =============================================================================
+# Build final valid observations
 # =============================================================================
 def _build_valid_observations_global(
     section_no: str,
@@ -812,14 +1009,7 @@ def _build_valid_observations_global(
                 u = _s(p.get("url"))
                 photos_fixed.append({"url": u, "text": _s(p.get("text")), "bytes": photo_bytes_cache.get(u)})
 
-        valid.append(
-            {
-                "title": title_num,
-                "text": "",
-                "audio_url": _s(it.get("audio_url")),
-                "photos": photos_fixed,
-            }
-        )
+        valid.append({"title": title_num, "text": "", "audio_url": _s(it.get("audio_url")), "photos": photos_fixed})
         global_idx += 1
 
     return valid, global_idx
@@ -832,41 +1022,21 @@ def render_step(
     ctx: Tool6Context,
     *,
     fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
-    fetch_audio: Optional[Callable[[str], Tuple[bool, Optional[bytes], str, str]]] = None,
 ) -> bool:
     _ensure_state()
     _inject_css()
 
-    # ✅ ONLY IMAGES
     raw_photo_urls = getattr(ctx, "all_photo_urls", []) or []
     photo_labels = getattr(ctx, "photo_label_by_url", {}) or {}
     photo_urls = _only_images(raw_photo_urls)
 
-    # Audio discovery
-    audio_url_list, audio_label_by_url, audio_source_msg = _discover_audio(ctx)
-    # =======================
-    # ✅ AUDIO DEBUG TEST (TEMP)
-    # =======================
-
+    audio_urls, audio_label_by_url, audio_source_msg = _discover_audio(ctx)
 
     card_open("Observations", variant="lg-variant-green")
 
     comps: List[Dict[str, Any]] = st.session_state[SS_OBS]
-
-    topA, topB, topC = st.columns([0.40, 0.30, 0.30], gap="small")
-    with topA:
-        show_photo_picker = st.toggle("Pick photos with preview", value=True, key=_k("show_picker"))
-    with topB:
-        if st.button("Clear all", use_container_width=True, key=_k("clear_all")):
-            st.session_state[SS_OBS] = []
-            st.session_state[SS_LAST_ADDED_COMP] = None
-            comps = st.session_state[SS_OBS]
-            st.rerun()
-    with topC:
-        st.button("➕ Add component", use_container_width=True, key=_k("add_comp_top"), on_click=_add_component)
-
     if not comps:
-        status_card("No components yet", "Use **Add component** to start.", level="warning")
+        status_card("No components yet", "Use **Add component** below to start.", level="warning")
 
     st.divider()
 
@@ -884,13 +1054,11 @@ def render_step(
         expanded = (ci == last_added) if last_added is not None else (ci == 0)
 
         with st.expander(exp_title, expanded=expanded):
-            top = st.columns([1, 1, 2], gap="small")
+            top = st.columns([1.1, 1.1, 1.8], gap="small")
             with top[0]:
-                st.button("Remove component", use_container_width=True, key=_k("rm_comp", ci),
-                          on_click=_remove_component, args=(ci,))
+                st.button("Remove component", use_container_width=True, key=_k("rm_comp", ci), on_click=_remove_component, args=(ci,))
             with top[1]:
-                st.button("Add observation", use_container_width=True, key=_k("add_obs", ci),
-                          on_click=_add_observation, args=(ci,))
+                st.button("Add observation", use_container_width=True, key=_k("add_obs", ci), on_click=_add_observation, args=(ci,))
 
             st.divider()
 
@@ -904,61 +1072,27 @@ def render_step(
                 raw_title = _obs_title_raw(it)
                 numbered = _numbered_title(SECTION_NO, global_obs_idx, raw_title) if raw_title else ""
                 header_title = numbered if numbered else f"Observation {oi + 1}"
+                scope_key = _scope(ci, oi)
 
                 st.markdown("<div class='t6-obs-box'>", unsafe_allow_html=True)
 
                 hdr = st.columns([3, 1], gap="small")
                 with hdr[0]:
                     st.markdown(f"**{header_title}**")
+                with hdr[1]:
+                    st.button("Remove", use_container_width=True, key=_k("rm_obs", ci, oi), on_click=_remove_observation, args=(ci, oi))
 
-                # =======================
-                # Audio (GUARANTEED)
-                # =======================
-                # =======================
-                # ✅ Audio (PLAY BY URL)
-                # =======================
-                if audio_url_list:
-                    st.caption(audio_source_msg)
-
-                    a1, a2 = st.columns([2, 1], gap="small")
-
-                    with a1:
-                        cur_audio = _s(it.get("audio_url"))
-                        opts = [""] + audio_url_list
-                        idx = opts.index(cur_audio) if cur_audio in opts else 0
-
-                        it["audio_url"] = st.selectbox(
-                            "Audio (optional)",
-                            options=opts,
-                            index=idx,
-                            format_func=lambda u: (audio_label_by_url.get(u, "Audio") if u else "None"),
-                            key=_k("audio_pick", ci, oi),
-                        )
-
-                    with a2:
-                        st.caption("Play")
-                        if it["audio_url"]:
-                            audio_url = it["audio_url"]
-
-                            # ✅ IMPORTANT: play by URL in browser (no download in Streamlit server)
-                            st.audio(audio_url, format=_guess_audio_mime(audio_url))
-
-                            # Optional: show link
-                            st.markdown(
-                                f"<a href='{audio_url}' target='_blank' style='font-size:12px; opacity:0.85;'>Open audio in new tab</a>",
-                                unsafe_allow_html=True,
-                            )
-                        else:
-                            st.caption("None")
-                else:
-                    it["audio_url"] = ""
-                    st.info(audio_source_msg or "No audio links found for this TPM_ID row.")
+                _audio_playlist_block(
+                    audio_urls=audio_urls,
+                    audio_label_by_url=audio_label_by_url,
+                    source_msg=audio_source_msg,
+                    it=it,
+                    scope_key=scope_key,
+                )
 
                 st.divider()
 
-                # =======================
                 # Title
-                # =======================
                 m1, m2 = st.columns([1, 2], gap="small")
                 with m1:
                     it["title_mode"] = st.radio(
@@ -973,101 +1107,50 @@ def render_step(
                         opts = [""] + DEFAULT_OBSERVATION_TITLES
                         cur = _s(it.get("title_selected"))
                         idx = opts.index(cur) if cur in opts else 0
-                        it["title_selected"] = st.selectbox(
-                            "Select title", options=opts, index=idx, key=_k("title_sel", ci, oi)
-                        )
+                        it["title_selected"] = st.selectbox("Select title", options=opts, index=idx, key=_k("title_sel", ci, oi))
                         it["title_custom"] = ""
                     else:
-                        it["title_custom"] = st.text_input(
-                            "Custom title", value=_s(it.get("title_custom")), key=_k("title_custom", ci, oi)
-                        )
+                        it["title_custom"] = st.text_input("Custom title", value=_s(it.get("title_custom")), key=_k("title_custom", ci, oi))
                         it["title_selected"] = ""
 
                 title_final = _obs_title_raw(it)
+                st.divider()
 
-                # =======================
-                # Photos (Step4-like)
-                # =======================
+                # Photos
                 if not photo_urls:
                     st.info("No image/photo URLs are available for this record.")
                     it["photos"] = []
+                    it["photo_picker_locked"] = False
                 else:
                     if not title_final:
                         st.warning("Select or enter a title to enable photo selection.")
-                        selected_urls: List[str] = []
-                        it["photo_picker_locked"] = False
                         it["photos"] = []
+                        it["photo_picker_locked"] = False
                     else:
-                        prev_selected = [
-                            p.get("url") for p in (it.get("photos") or [])
-                            if isinstance(p, dict) and p.get("url") in photo_urls
-                        ]
-                        prev_selected = [u for u in photo_urls if u in set(prev_selected)]  # stable order
+                        # render picker with persistent selection state
+                        st.markdown("**Photos**")
 
-                        if show_photo_picker:
-                            st.markdown("**Photos**")
+                        selected_urls, locked = _render_photo_picker(
+                            urls=photo_urls,
+                            labels=photo_labels,
+                            fetch_image=fetch_image,
+                            scope_key=scope_key,
+                        )
 
-                            selected_urls, locked_now = _render_photo_picker_step4_style(
-                                urls=photo_urls,
-                                labels=photo_labels,
-                                selected_urls=prev_selected,
-                                fetch_image=fetch_image,
-                                locked_flag=bool(it.get("photo_picker_locked")),
-                                scope_key=f"c{ci}.o{oi}",
-                            )
-                            it["photo_picker_locked"] = bool(locked_now)
-
-                        else:
-                            # fallback multiselect (still supports Done lock)
-                            selected_urls = st.multiselect(
-                                "Select photos for this observation",
-                                options=photo_urls,
-                                default=prev_selected,
-                                format_func=lambda u: photo_labels.get(u, u),
-                                key=_k("obs_photos", ci, oi),
-                            )
-                            selected_urls = [u for u in photo_urls if u in set(selected_urls)]
-                            if selected_urls:
-                                if st.button("✅ Done selecting", use_container_width=True, key=_k("done_sel_ms", ci, oi)):
-                                    it["photo_picker_locked"] = True
-                                    for u in selected_urls:
-                                        _ensure_full_bytes_selected(u, fetch_image=fetch_image)
-                                    st.rerun()
-                            else:
-                                it["photo_picker_locked"] = False
-
-                        # ensure thumbs for selected (for below preview + per-photo notes)
-                        for u in selected_urls[:PREFETCH_LIMIT]:
-                            _fetch_thumb_only(u, fetch_image=fetch_image)
-
+                        it["photo_picker_locked"] = bool(locked)
                         it["photos"] = _normalize_photos(selected_urls, it.get("photos") or [])
 
-                        if it["photos"]:
-                            st.markdown("**Observation for each selected photo**")
-                            thumbs: Dict[str, bytes] = st.session_state.get(SS_PHOTO_THUMBS, {}) or {}
+                        # show notes only when locked OR when there are selected urls
+                        if selected_urls:
+                            _photo_notes_block(
+                                it=it,
+                                photo_labels=photo_labels,
+                                ci=ci,
+                                oi=oi,
+                                fetch_image=fetch_image,
+                            )
 
-                            for pj, ph in enumerate(it["photos"]):
-                                u = _s(ph.get("url"))
-                                lab = photo_labels.get(u, u)
-
-                                colA, colB = st.columns([1, 2], gap="small")
-                                with colA:
-                                    tb = thumbs.get(u)
-                                    if tb:
-                                        st.markdown(_thumb_html(tb, lab), unsafe_allow_html=True)
-                                    else:
-                                        st.caption(lab)
-                                        st.caption("Preview not available.")
-                                with colB:
-                                    ph["text"] = st.text_area(
-                                        "Observation",
-                                        value=_s(ph.get("text")),
-                                        height=90,
-                                        key=_k("photo_obs", ci, oi, pj),
-                                        placeholder="Write observation for this photo...",
-                                    )
-
-                st.markdown("</div>", unsafe_allow_html=True)  # t6-obs-box end
+                st.markdown("</div>", unsafe_allow_html=True)
 
                 observations[oi] = it
                 if _s(title_final):
@@ -1076,14 +1159,13 @@ def render_step(
             comp["observations"] = observations
             comps[ci] = comp
 
-    # Build observations_valid
+    # Build valid observations
     photo_bytes_cache: Dict[str, bytes] = st.session_state.get(SS_PHOTO_BYTES, {}) or {}
-
     global_idx = 1
     for ci in range(len(comps)):
         comp = _ensure_component_schema(comps[ci])
         valid, global_idx = _build_valid_observations_global(
-            "5",
+            SECTION_NO,
             comp.get("observations") or [],
             start_index_1based=global_idx,
             photo_bytes_cache=photo_bytes_cache,
@@ -1095,6 +1177,14 @@ def render_step(
     st.session_state["tool6_component_observations_final"] = comps
 
     total_valid = sum(len(c.get("observations_valid") or []) for c in comps if isinstance(c, dict))
+
+    # Bottom sticky actions
+    st.markdown("<div class='t6-bottombar'><div class='t6-bottombar-inner'>", unsafe_allow_html=True)
+    b1, b2, b3 = st.columns([1, 1, 2], gap="small")
+    with b1:
+        st.button("Clear all", use_container_width=True, key=_k("clear_all_bottom"), on_click=_clear_all)
+    with b2:
+        st.button("➕ Add component", use_container_width=True, key=_k("add_comp_bottom"), on_click=_add_component)
 
     st.divider()
     card_close()
