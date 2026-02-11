@@ -55,6 +55,9 @@ IMG_TTL_FAIL = 90
 IMG_CACHE_MAX_ITEMS = 600
 IMG_MAX_MB = 25
 
+# When thumb is not available, render bytes with a sane max dimension
+FALLBACK_MAXPX = 900
+
 
 # =============================================================================
 # Cover fields / defaults
@@ -139,13 +142,12 @@ def _only_images(urls: List[str], labels: Dict[str, str]) -> List[str]:
 
 
 # =============================================================================
-# CSS: Sticky controls for Available Images
+# CSS
 # =============================================================================
 def _inject_css() -> None:
     st.markdown(
         """
 <style>
-  /* Sticky bar for Available Images controls */
   .t6-sticky {
     position: sticky;
     top: 0;
@@ -157,11 +159,8 @@ def _inject_css() -> None:
     padding: 10px 10px 8px 10px;
     margin-bottom: 10px;
   }
-
-  /* Tighten vertical spacing */
   [data-testid="stVerticalBlock"] { gap: 0.55rem; }
 
-  /* Hover/Touch zoom HD container */
   .t6-zoombox {
     position: relative;
     width: 100%;
@@ -170,7 +169,6 @@ def _inject_css() -> None:
     border-radius: 12px;
     background: rgba(0,0,0,0.10);
   }
-
   .t6-zoombox img.t6-thumb {
     width: 100%;
     height: 100%;
@@ -180,7 +178,6 @@ def _inject_css() -> None:
     transition: transform 160ms ease, opacity 140ms ease;
     opacity: 1;
   }
-
   .t6-zoombox img.t6-hd {
     position: absolute;
     inset: 0;
@@ -193,41 +190,16 @@ def _inject_css() -> None:
     transition: opacity 140ms ease, transform 160ms ease;
     pointer-events: none;
   }
-
-  /* Desktop hover */
-  .t6-zoombox:hover img.t6-thumb {
-    transform: scale(1.08);
-    opacity: 0.12;
-  }
-  .t6-zoombox:hover img.t6-hd {
-    opacity: 1;
-    transform: scale(1.12);
-  }
-
-  /* Touch: while pressing */
-  .t6-zoombox:active img.t6-thumb {
-    transform: scale(1.08);
-    opacity: 0.12;
-  }
-  .t6-zoombox:active img.t6-hd {
-    opacity: 1;
-    transform: scale(1.12);
-  }
-
-  /* Touch: when any inner element gets focus */
-  .t6-zoombox:focus-within img.t6-thumb {
-    transform: scale(1.08);
-    opacity: 0.12;
-  }
-  .t6-zoombox:focus-within img.t6-hd {
-    opacity: 1;
-    transform: scale(1.12);
-  }
+  .t6-zoombox:hover img.t6-thumb { transform: scale(1.08); opacity: 0.12; }
+  .t6-zoombox:hover img.t6-hd { opacity: 1; transform: scale(1.12); }
+  .t6-zoombox:active img.t6-thumb { transform: scale(1.08); opacity: 0.12; }
+  .t6-zoombox:active img.t6-hd { opacity: 1; transform: scale(1.12); }
+  .t6-zoombox:focus-within img.t6-thumb { transform: scale(1.08); opacity: 0.12; }
+  .t6-zoombox:focus-within img.t6-hd { opacity: 1; transform: scale(1.12); }
 </style>
 """,
         unsafe_allow_html=True,
     )
-
 
 
 # =============================================================================
@@ -252,13 +224,6 @@ def _to_clean_png_bytes(raw: bytes, *, max_px: int = 2600) -> bytes:
 
 
 def _make_thumb_contain(img_bytes: bytes, *, box: int = THUMB_BOX, quality: int = 82) -> Optional[bytes]:
-    """
-    Thumbnail سریع و کوچک:
-      - contain داخل مربع
-      - خروجی JPEG
-    اگر Pillow نتواند decode کند (مثلاً WEBP روی Cloud)، None برمی‌گردد
-    و UI مستقیماً URL را با st.image(url) نشان می‌دهد.
-    """
     try:
         img = Image.open(BytesIO(img_bytes))
         img = ImageOps.exif_transpose(img).convert("RGB")
@@ -273,6 +238,7 @@ def _make_thumb_contain(img_bytes: bytes, *, box: int = THUMB_BOX, quality: int 
         return out.getvalue()
     except Exception:
         return None
+
 
 HOVER_HD_MAXPX = 1600
 HOVER_HD_QUALITY = 85
@@ -294,20 +260,33 @@ def _make_hover_hd(img_bytes: bytes, *, max_px: int = HOVER_HD_MAXPX, quality: i
         return None
 
 
+def _resize_bytes_for_ui(img_bytes: bytes, *, max_px: int = FALLBACK_MAXPX) -> bytes:
+    """برای وقتی thumb نداریم: bytes را سبک‌تر کنیم تا UI سنگین نشود."""
+    try:
+        img = Image.open(BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img)
+        w, h = img.size
+        m = max(w, h)
+        if m > max_px:
+            scale = max_px / float(m)
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+        if img.mode not in ("RGB", "RGBA"):
+            img = img.convert("RGB")
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=82, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return img_bytes
+
+
 @st.cache_data(show_spinner=False, max_entries=8192)
 def _b64_bytes(data: bytes) -> str:
     return base64.b64encode(data).decode("utf-8")
 
 
 def _zoom_html(thumb_bytes: Optional[bytes], hd_bytes: Optional[bytes]) -> str:
-    """
-    thumb_bytes: JPEG کوچک
-    hd_bytes: JPEG بزرگتر برای hover/touch
-    """
     if not thumb_bytes:
-        # اگر thumb نداریم (مثلاً WEBP decode نشد) این تابع را صدا نزنید
         return ""
-
     b64t = _b64_bytes(thumb_bytes)
     t = f"<img class='t6-thumb' loading='lazy' src='data:image/jpeg;base64,{b64t}'/>"
 
@@ -317,6 +296,7 @@ def _zoom_html(thumb_bytes: Optional[bytes], hd_bytes: Optional[bytes]) -> str:
         h = f"<img class='t6-hd' loading='lazy' src='data:image/jpeg;base64,{b64h}'/>"
 
     return f"<div class='t6-zoombox' tabindex='0'>{t}{h}</div>"
+
 
 # =============================================================================
 # TTL fetch cache wrapper
@@ -366,7 +346,9 @@ def _fetch_image_cached(
     except Exception as e:
         ok, b, msg = False, None, f"Fetch exception: {type(e).__name__}: {e}"
 
-    if ok and b:
+    # IMPORTANT: treat empty bytes as failure (prevents "0 bytes" broken images)
+    if ok and isinstance(b, (bytes, bytearray)) and len(b) > 0:
+        b = bytes(b)
         if len(b) > max_mb * 1024 * 1024:
             cache[url] = {"ts": now, "ok": False, "bytes": None, "msg": f"Image too large (> {max_mb}MB)"}
             ss[SS_IMG_CACHE] = cache
@@ -376,27 +358,34 @@ def _fetch_image_cached(
         ss[SS_IMG_CACHE] = cache
         return True, b, "OK"
 
-    cache[url] = {"ts": now, "ok": False, "bytes": None, "msg": _s(msg) or "Fetch failed"}
+    fail_msg = _s(msg) or "Fetch failed"
+    if ok and (b is None or (isinstance(b, (bytes, bytearray)) and len(b) == 0)):
+        fail_msg = "Fetch returned empty bytes"
+    cache[url] = {"ts": now, "ok": False, "bytes": None, "msg": fail_msg}
     ss[SS_IMG_CACHE] = cache
-    return False, None, _s(msg) or "Fetch failed"
+    return False, None, fail_msg
 
 
 def ensure_full_image_bytes(
     url: str,
     *,
     fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
-) -> None:
+) -> Tuple[bool, Optional[bytes], str]:
+    """برگرداندن (ok, bytes, msg) تا UI بتواند پیام خطا را نمایش دهد."""
     url = _s(url)
     if not url:
-        return
-    pb: Dict[str, bytes] = st.session_state.get(SS_PHOTO_BYTES, {}) or {}
-    if url in pb and pb[url]:
-        return
+        return False, None, "Empty URL"
 
-    ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+    pb: Dict[str, bytes] = st.session_state.get(SS_PHOTO_BYTES, {}) or {}
+    if url in pb and isinstance(pb[url], (bytes, bytearray)) and pb[url]:
+        return True, bytes(pb[url]), "OK"
+
+    ok, b, msg = _fetch_image_cached(url, fetch_image=fetch_image)
     if ok and b:
         pb[url] = b
         st.session_state[SS_PHOTO_BYTES] = pb
+        return True, b, "OK"
+    return False, None, msg
 
 
 def cache_thumbnail_only(
@@ -418,16 +407,9 @@ def cache_thumbnail_only(
             ss[SS_COVER_THUMBS] = thumbs_local
         return
 
-    pb: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
-    src = pb.get(url)
-
-    if not src:
-        ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
-        if not (ok and b):
-            return
-        src = b
-        pb[url] = b
-        ss[SS_PHOTO_BYTES] = pb
+    ok, src, _ = ensure_full_image_bytes(url, fetch_image=fetch_image)
+    if not (ok and src):
+        return
 
     th = _make_thumb_contain(src, box=THUMB_BOX, quality=82)
     if th:
@@ -435,7 +417,7 @@ def cache_thumbnail_only(
         thumbs_global[url] = th
         ss[SS_COVER_THUMBS] = thumbs_local
         ss[SS_PHOTO_THUMBS] = thumbs_global
-    # اگر th=None شد، عمداً چیزی cache نمی‌کنیم تا UI fallback به URL انجام شود
+    # اگر th=None شد، thumb نمی‌سازیم ولی bytes همچنان هست و UI با bytes نمایش می‌دهد.
 
 
 # =============================================================================
@@ -482,6 +464,7 @@ def _build_cover_defaults(ctx: Tool6Context) -> Dict[str, str]:
 
     intervention = _s(
         row.get("Tools_Name")
+        or row.get("Tool_Name")
         or row.get("Tools")
         or defaults.get("Tools Name")
         or defaults.get("Type of Intervention")
@@ -540,7 +523,6 @@ def _keep_only_cover(*, cover_url: str, cover_bytes: Optional[bytes]) -> None:
         ss[SS_COVER_BYTES] = bytes(cover_bytes)
         ss["cover_bytes"] = bytes(cover_bytes)
 
-    # Keep only cover-related caches (optional but good for Cloud)
     tl = ss.get(SS_COVER_THUMBS) or {}
     ss[SS_COVER_THUMBS] = {cover_url: tl[cover_url]} if isinstance(tl, dict) and cover_url in tl else {}
 
@@ -636,7 +618,37 @@ def _on_date_fmt_change(ctx: Tool6Context) -> None:
 
 
 # =============================================================================
-# Picker (MINIMAL + STICKY controls)
+# UI rendering helpers (IMPORTANT FIX: never st.image(url) for private assets)
+# =============================================================================
+def _render_image_tile(
+    url: str,
+    *,
+    label: str,
+    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+) -> None:
+    ss = st.session_state
+
+    # Try thumb first
+    tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(url) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(url)
+    if isinstance(tb, (bytes, bytearray)) and tb:
+        ok, src, _ = ensure_full_image_bytes(url, fetch_image=fetch_image)
+        hd = _make_hover_hd(src) if (ok and src) else None
+        st.markdown(_zoom_html(bytes(tb), hd), unsafe_allow_html=True)
+        st.caption(label)
+        return
+
+    # No thumb => still render via BYTES (not URL)
+    ok, src, msg = ensure_full_image_bytes(url, fetch_image=fetch_image)
+    if ok and src:
+        st.image(_resize_bytes_for_ui(src, max_px=FALLBACK_MAXPX), use_container_width=True, caption=label)
+        return
+
+    # Fetch failed => show a useful error (instead of broken image icon)
+    st.error(f"Image not available.\n\n{label}\n\nReason: {msg}")
+
+
+# =============================================================================
+# Picker
 # =============================================================================
 def _render_picker(
     *,
@@ -658,14 +670,11 @@ def _render_picker(
         if not cover_url and resolve_cover_bytes():
             st.image(resolve_cover_bytes(), use_container_width=True)
         else:
-            # Try bytes first; fallback to URL rendering if bytes not available
-            ensure_full_image_bytes(cover_url, fetch_image=fetch_image)
-            src = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(cover_url)
-
-            if isinstance(src, (bytes, bytearray)) and src:
-                st.image(bytes(src), use_container_width=True, caption=lab(cover_url))
+            ok, src, msg = ensure_full_image_bytes(cover_url, fetch_image=fetch_image)
+            if ok and src:
+                st.image(src, use_container_width=True, caption=lab(cover_url))
             else:
-                st.image(cover_url, use_container_width=True, caption=lab(cover_url))
+                st.error(f"Selected cover not available: {msg}")
 
         c1, c2 = st.columns(2, gap="small")
         with c1:
@@ -684,7 +693,7 @@ def _render_picker(
                 st.rerun()
         return
 
-    # ---- Sticky controls (Search + Prev/Next) ----
+    # ---- Sticky controls ----
     st.markdown("<div class='t6-sticky'>", unsafe_allow_html=True)
 
     q = st.text_input(
@@ -700,12 +709,8 @@ def _render_picker(
     total = len(filtered)
     pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
 
-    # clamp page
     page = int(ss.get(SS_COVER_PICK_PAGE, 1) or 1)
-    if page < 1:
-        page = 1
-    if page > pages:
-        page = pages
+    page = max(1, min(page, pages))
     ss[SS_COVER_PICK_PAGE] = page
 
     b1, b2, b3 = st.columns([0.25, 0.50, 0.25], gap="small")
@@ -714,14 +719,17 @@ def _render_picker(
             ss[SS_COVER_PICK_PAGE] = max(1, page - 1)
             st.rerun()
     with b2:
-        st.markdown(f"<div style='text-align:center; padding-top:6px;'>Page <b>{page}</b> / {pages} — {total} photos</div>", unsafe_allow_html=True)
+        st.markdown(
+            f"<div style='text-align:center; padding-top:6px;'>Page <b>{page}</b> / {pages} — {total} photos</div>",
+            unsafe_allow_html=True,
+        )
     with b3:
         if st.button("Next ▶", use_container_width=True, disabled=(page >= pages), key=_key("next_page")):
             ss[SS_COVER_PICK_PAGE] = min(pages, page + 1)
             st.rerun()
 
     st.markdown("</div>", unsafe_allow_html=True)
-    # ---- end sticky controls ----
+    # ---- end sticky ----
 
     if not filtered:
         st.info("No photos match your search.")
@@ -741,27 +749,22 @@ def _render_picker(
 
         for col, u in zip(cols, row):
             with col:
-                tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(u) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(u)
-
-                # 1) If thumbnail exists => show it
-                # 2) Else => fallback to st.image(url) so user still sees image even if PIL decode failed
-                if isinstance(tb, (bytes, bytearray)) and tb:
-                    st.image(bytes(tb), use_container_width=True, caption=lab(u))
-                else:
-                    st.image(u, use_container_width=True, caption=lab(u))
+                _render_image_tile(u, label=lab(u), fetch_image=fetch_image)
 
                 if st.button("Select", use_container_width=True, key=_key("sel", u)):
-                    ensure_full_image_bytes(u, fetch_image=fetch_image)
-                    b = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(u)
+                    ok, b, msg = ensure_full_image_bytes(u, fetch_image=fetch_image)
+                    if not (ok and b):
+                        st.error(f"Cannot select this image: {msg}")
+                        st.stop()
 
                     ss[SS_COVER_UPLOAD_BYTES] = None
                     ss[SS_COVER_PICK_LOCKED] = True
-                    _keep_only_cover(cover_url=u, cover_bytes=b if isinstance(b, (bytes, bytearray)) else None)
+                    _keep_only_cover(cover_url=u, cover_bytes=b)
                     st.rerun()
 
 
 # =============================================================================
-# Panels (fragmented: avoid rerunning gallery when editing fields)
+# Panels
 # =============================================================================
 @st.fragment
 def _images_panel(ctx: Tool6Context, fetch_image) -> None:
@@ -819,10 +822,8 @@ def render_step(
     fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
 ) -> bool:
     """
-    مینیمال + Cloud-safe:
-      - Sticky controls فقط برای Search/Prev/Next در Available Images
-      - حذف کارت/کانتینر/hover/HD/debug
-      - نمایش مطمئن تصویر: thumb bytes اگر شد، وگرنه URL مستقیم
+    Fix: نمایش تصاویر فقط از طریق BYTES (نه URL).
+    این برای لینک‌های private/signed/auth-required ضروری است.
     """
     _ensure_state(ctx)
     _inject_css()
