@@ -746,15 +746,8 @@ def _render_picker(
                 # 1) If thumbnail exists => show it
                 # 2) Else => fallback to st.image(url) so user still sees image even if PIL decode failed
                 if isinstance(tb, (bytes, bytearray)) and tb:
-                    # hd را از bytes اصلی بسازیم (اگر داریم)
-                    ensure_full_image_bytes(u, fetch_image=fetch_image)
-                    src = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(u)
-                    hd = _make_hover_hd(bytes(src)) if isinstance(src, (bytes, bytearray)) and src else None
-
-                    st.markdown(_zoom_html(bytes(tb), hd), unsafe_allow_html=True)
-                    st.caption(lab(u))
+                    st.image(bytes(tb), use_container_width=True, caption=lab(u))
                 else:
-                    # fallback (برای وقتی Pillow نتونست thumb بسازه)
                     st.image(u, use_container_width=True, caption=lab(u))
 
                 if st.button("Select", use_container_width=True, key=_key("sel", u)):
