@@ -13,7 +13,7 @@ from docx.text.paragraph import Paragraph
 
 
 # ============================================================
-# Inline helpers (replacing src.report_sections._word_common)
+# Inline helpers (clean + stable)
 # ============================================================
 def s(v: Any) -> str:
     return "" if v is None else str(v).strip()
@@ -38,22 +38,35 @@ def set_run(
     run,
     font: str,
     size: Union[int, float],
+    *,
     bold: bool = False,
     color: Optional[RGBColor] = None,
 ) -> None:
+    # Font name
     try:
         run.font.name = font
     except Exception:
         pass
+
+    # EastAsia font (important for some Word envs)
     try:
-        run._element.rPr.rFonts.set(qn("w:eastAsia"), font)  # type: ignore[attr-defined]
+        rpr = run._element.get_or_add_rPr()
+        rfonts = rpr.find(qn("w:rFonts"))
+        if rfonts is None:
+            rfonts = OxmlElement("w:rFonts")
+            rpr.append(rfonts)
+        rfonts.set(qn("w:eastAsia"), font)
     except Exception:
         pass
+
+    # Size
     try:
         run.font.size = Pt(float(size))
     except Exception:
         pass
+
     run.bold = bool(bold)
+
     if color is not None:
         try:
             run.font.color.rgb = color
@@ -69,7 +82,8 @@ def set_paragraph_bottom_border(
     space: int = 2,
 ) -> None:
     """
-    Add/Update a bottom border under a paragraph (orange underline).
+    Bottom border under a paragraph (orange underline).
+    size_eighths is in 1/8 pt units (Word).
     """
     pPr = paragraph._p.get_or_add_pPr()
     pBdr = pPr.find(qn("w:pBdr"))
@@ -85,7 +99,7 @@ def set_paragraph_bottom_border(
     bottom.set(qn("w:val"), "single")
     bottom.set(qn("w:sz"), str(int(size_eighths)))
     bottom.set(qn("w:space"), str(int(space)))
-    bottom.set(qn("w:color"), s(color_hex).replace("#", ""))
+    bottom.set(qn("w:color"), s(color_hex).replace("#", "") or "000000")
 
 
 def add_heading(
@@ -100,7 +114,7 @@ def add_heading(
     color: Optional[RGBColor] = None,
 ) -> Paragraph:
     """
-    Add a REAL Word heading paragraph (TOC-safe).
+    Adds a real Word heading (TOC-safe). Keeps style intact.
     """
     lvl = max(1, min(int(level), 9))
     p = doc.add_paragraph()
@@ -121,15 +135,17 @@ def add_section_title_h1(
     *,
     font: str = "Cambria",
     size: int = 16,
-    color: Optional[RGBColor] = RGBColor(0, 112, 192),
+    # IMPORTANT: keep Heading 1 "natural" color by default => None
+    color: Optional[RGBColor] = None,
     orange_hex: str = "ED7D31",
     after_pt: Union[int, float] = 6,
 ) -> Paragraph:
     """
-    ✅ Standard H1 title:
+    Standard H1 title:
       - Heading 1 (TOC-safe)
       - size 16
       - orange underline on same paragraph
+      - if color=None => keep Word style default color
     """
     p = add_heading(
         doc,
@@ -150,6 +166,15 @@ def add_section_title_h1(
 # Table helpers
 # -------------------------
 def set_table_fixed_layout(table) -> None:
+    """
+    Prevent Word from auto-resizing columns.
+    """
+    try:
+        table.allow_autofit = False  # type: ignore[attr-defined]
+    except Exception:
+        pass
+    table.autofit = False
+
     tbl = table._tbl
     tblPr = tbl.tblPr
     tblLayout = tblPr.find(qn("w:tblLayout"))
@@ -159,13 +184,16 @@ def set_table_fixed_layout(table) -> None:
     tblLayout.set(qn("w:type"), "fixed")
 
 
-def set_table_borders(table, *, color_hex: str = "A6A6A6", size: str = "2") -> None:
+def set_table_borders(table, *, color_hex: str = "A6A6A6", size_eighths: int = 2) -> None:
     """
-    ✅ Border width = 1/4 pt
-    Word uses 1/8 pt units:
+    Borders for the whole table.
+
+    ✅ 1/4 pt borders:
+      Word border size uses 1/8 pt units:
       0.25pt * 8 = 2  -> w:sz="2"
     """
     color_hex = s(color_hex).replace("#", "") or "A6A6A6"
+
     tbl = table._tbl
     tbl_pr = tbl.tblPr
     borders = tbl_pr.first_child_found_in("w:tblBorders")
@@ -179,7 +207,7 @@ def set_table_borders(table, *, color_hex: str = "A6A6A6", size: str = "2") -> N
             el = OxmlElement(f"w:{edge}")
             borders.append(el)
         el.set(qn("w:val"), "single")
-        el.set(qn("w:sz"), str(size))   # ✅ 1/4pt
+        el.set(qn("w:sz"), str(int(size_eighths)))  # ✅ 1/4pt = 2
         el.set(qn("w:space"), "0")
         el.set(qn("w:color"), color_hex)
 
@@ -197,6 +225,9 @@ def shade_cell(cell, fill_hex: str) -> None:
 
 
 def set_cell_margins(cell, *, top_dxa=80, bottom_dxa=80, left_dxa=120, right_dxa=120) -> None:
+    """
+    Set cell internal margins. DXA (twips): 1440 twips = 1 inch.
+    """
     tcPr = cell._tc.get_or_add_tcPr()
     tcMar = tcPr.find(qn("w:tcMar"))
     if tcMar is None:
@@ -252,7 +283,7 @@ def write_cell_text(
     p = cell.paragraphs[0]
     tight_paragraph(p, align=align, before_pt=0, after_pt=0, line_spacing=1.0)
     r = p.add_run(s(text))
-    set_run(r, font, size, bold=bold)
+    set_run(r, font, size, bold=bold, color=None)
 
 
 def strip_heading_numbering(text: str) -> str:
@@ -279,37 +310,44 @@ BODY_FONT = "Times New Roman"
 BODY_SIZE = 11
 
 HEADER_FILL_HEX = "D9E2F3"
-BORDER_HEX = "A6A6A6"
+BORDER_HEX = "A6A6A6"  # border color
+BORDER_SZ_EIGHTHS = 2  # ✅ 1/4 pt
 
 
 # ============================================================
-# ✅ COLUMN WIDTHS (INCHES) - VERY CLEAR FOR EASY EDIT LATER
+# COLUMN WIDTHS (INCHES)
 # ============================================================
-COL_W_NO = Inches(0.4)
-COL_W_ACT = Inches(3.63)
-COL_W_PLAN = Inches(0.81)
-COL_W_ACH = Inches(0.81)
-COL_W_PROG = Inches(0.81)
-COL_W_REM = Inches(0.81)
+# NOTE: use float inches here for clarity; apply via Inches() below
+COL_W_NO_IN = 0.40
+COL_W_ACT_IN = 3.63
+COL_W_PLAN_IN = 0.81
+COL_W_ACH_IN = 0.81
+COL_W_PROG_IN = 0.81
+COL_W_REM_IN = 0.81
 
-COLUMN_WIDTHS = [COL_W_NO, COL_W_ACT, COL_W_PLAN, COL_W_ACH, COL_W_PROG, COL_W_REM]
+COLUMN_WIDTHS_IN = [COL_W_NO_IN, COL_W_ACT_IN, COL_W_PLAN_IN, COL_W_ACH_IN, COL_W_PROG_IN, COL_W_REM_IN]
 # ============================================================
 
 
-def _apply_column_widths(table, widths) -> None:
-    for i, w in enumerate(widths):
+def _apply_column_widths(table, widths_in: List[float]) -> None:
+    """
+    Apply widths to table columns and all cells.
+    Uses fixed layout => Word won't resize.
+    """
+    for i, w_in in enumerate(widths_in):
+        w = Inches(float(w_in))
         table.columns[i].width = w
     for row in table.rows:
-        for i, w in enumerate(widths):
-            row.cells[i].width = w
+        for i, w_in in enumerate(widths_in):
+            row.cells[i].width = Inches(float(w_in))
 
 
 def _normalize_progress_for_doc(progress_text: Any) -> str:
     """
     Keep user's value as much as possible.
-    If it's a plain number like '60' -> '60%'.
-    If already contains '%' -> keep it.
-    Otherwise keep raw text.
+    - If contains '%' -> keep
+    - If plain number -> clamp 0..100 and add '%'
+    - Else keep raw text
     """
     t = s(progress_text)
     if not t:
@@ -346,6 +384,7 @@ def _normalize_rows(rows: Optional[List[Dict[str, Any]]]) -> List[Dict[str, str]
         progress = _normalize_progress_for_doc(r.get("Progress"))
         remarks = s(r.get("Remarks"))
 
+        # skip fully empty rows
         if not act and not any([planned, achieved, progress, remarks]):
             continue
 
@@ -371,15 +410,18 @@ def add_work_progress_summary_during_visit(
     """
     Section 4 table.
 
-    ✅ If `rows` is provided (from Step 5), it fills the whole table.
-    ✅ If not, it falls back to `activity_titles_from_section5` and leaves other columns blank.
+    ✅ If `rows` provided (from Step 5), fills the table.
+    ✅ Else uses titles list and leaves numeric columns blank.
 
-    ✅ Requested formatting:
-      - table borders = 1/4pt
-      - Body: No. centered
-      - Body: Planned/Achieved/Progress centered
+    ✅ Formatting:
+      - Heading 1 keeps its native (style) color
+      - table fixed layout
+      - borders = 1/4 pt (w:sz=2)
+      - Header centered with fill
+      - Body: No/Planned/Achieved/Progress centered
     """
 
+    # Keep Heading 1 natural color (color=None)
     add_section_title_h1(
         doc,
         s(title_text),
@@ -390,20 +432,18 @@ def add_work_progress_summary_during_visit(
         after_pt=6,
     )
 
+    # spacing after title
     psp = doc.add_paragraph("")
-    tight_paragraph(psp, align=WD_ALIGN_PARAGRAPH.LEFT, before_pt=0, after_pt=6, line_spacing=1)
+    tight_paragraph(psp, align=WD_ALIGN_PARAGRAPH.LEFT, before_pt=0, after_pt=6, line_spacing=1.0)
 
     table = doc.add_table(rows=1, cols=6)
-    table.autofit = False
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
     table.style = "Table Grid"
 
     set_table_fixed_layout(table)
+    set_table_borders(table, color_hex=BORDER_HEX, size_eighths=BORDER_SZ_EIGHTHS)
 
-    # ✅ 1/4pt borders
-    set_table_borders(table, color_hex=BORDER_HEX, size="2")
-
-    _apply_column_widths(table, COLUMN_WIDTHS)
+    _apply_column_widths(table, COLUMN_WIDTHS_IN)
 
     headers = ["No.", "Activities", "Planned", "Achieved", "Progress", "Remarks"]
 
@@ -411,9 +451,14 @@ def add_work_progress_summary_during_visit(
     set_row_cant_split(hdr, cant_split=True)
 
     for i, cell in enumerate(hdr.cells):
-        cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        try:
+            cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        except Exception:
+            pass
+
         shade_cell(cell, HEADER_FILL_HEX)
         set_cell_margins(cell, top_dxa=80, bottom_dxa=80, left_dxa=120, right_dxa=120)
+
         write_cell_text(
             cell,
             headers[i],
@@ -424,9 +469,7 @@ def add_work_progress_summary_during_visit(
             valign=WD_ALIGN_VERTICAL.CENTER,
         )
 
-    _apply_column_widths(table, COLUMN_WIDTHS)
-
-    # ---- Body rows source
+    # ---- Body source
     data_rows = _normalize_rows(rows)
 
     if not data_rows:
@@ -439,20 +482,22 @@ def add_work_progress_summary_during_visit(
             clean_acts = ["", "", ""]
         data_rows = [{"Activities": act, "Planned": "", "Achieved": "", "Progress": "", "Remarks": ""} for act in clean_acts]
 
-    # ---- Render body rows
+    # ---- Body rows
     for idx, rr in enumerate(data_rows, start=1):
-        r = table.add_row()
-        set_row_cant_split(r, cant_split=False)
+        row = table.add_row()
+        set_row_cant_split(row, cant_split=False)
 
-        for i, w in enumerate(COLUMN_WIDTHS):
-            r.cells[i].width = w
+        _apply_column_widths(table, COLUMN_WIDTHS_IN)
 
-        cells = r.cells
+        cells = row.cells
         for c in cells:
-            c.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+            try:
+                c.vertical_alignment = WD_ALIGN_VERTICAL.TOP
+            except Exception:
+                pass
             set_cell_margins(c, top_dxa=80, bottom_dxa=80, left_dxa=120, right_dxa=120)
 
-        # ✅ CENTER columns: No., Planned, Achieved, Progress
+        # No.
         write_cell_text(
             cells[0],
             str(idx),
@@ -462,6 +507,8 @@ def add_work_progress_summary_during_visit(
             align=WD_ALIGN_PARAGRAPH.CENTER,
             valign=WD_ALIGN_VERTICAL.CENTER,
         )
+
+        # Activities
         write_cell_text(
             cells[1],
             rr.get("Activities", ""),
@@ -471,6 +518,8 @@ def add_work_progress_summary_during_visit(
             align=WD_ALIGN_PARAGRAPH.LEFT,
             valign=WD_ALIGN_VERTICAL.TOP,
         )
+
+        # Planned
         write_cell_text(
             cells[2],
             rr.get("Planned", ""),
@@ -480,6 +529,8 @@ def add_work_progress_summary_during_visit(
             align=WD_ALIGN_PARAGRAPH.CENTER,
             valign=WD_ALIGN_VERTICAL.CENTER,
         )
+
+        # Achieved
         write_cell_text(
             cells[3],
             rr.get("Achieved", ""),
@@ -489,6 +540,8 @@ def add_work_progress_summary_during_visit(
             align=WD_ALIGN_PARAGRAPH.CENTER,
             valign=WD_ALIGN_VERTICAL.CENTER,
         )
+
+        # Progress
         write_cell_text(
             cells[4],
             rr.get("Progress", ""),
@@ -498,6 +551,8 @@ def add_work_progress_summary_during_visit(
             align=WD_ALIGN_PARAGRAPH.CENTER,
             valign=WD_ALIGN_VERTICAL.CENTER,
         )
+
+        # Remarks
         write_cell_text(
             cells[5],
             rr.get("Remarks", ""),
@@ -508,4 +563,5 @@ def add_work_progress_summary_during_visit(
             valign=WD_ALIGN_VERTICAL.TOP,
         )
 
-    _apply_column_widths(table, COLUMN_WIDTHS)
+    # final safety width apply
+    _apply_column_widths(table, COLUMN_WIDTHS_IN)
