@@ -19,7 +19,7 @@ SS_WORK = "tool6_work_progress_rows"       # Step 5 output rows
 SS_AUTO_PROGRESS = "tool6_work_auto_progress"
 SS_TITLES_HASH = "tool6_work_titles_hash"  # performance: detect titles changes
 
-# UI/UX states
+# UI/UX states (persistent, stable)
 SS_VIEW_MODE = "tool6_work_view_mode"      # "Cards" | "Compact"
 SS_SEARCH = "tool6_work_search"
 SS_ROWS_PER_PAGE = "tool6_work_rows_per_page"
@@ -43,50 +43,45 @@ class UIConfig:
     PROGRESS_STEP = 1
     STORE_WITH_PERCENT_SIGN = True  # store "60%"
 
-    # Units
     UNIT_PRESETS = ["", "pcs", "m", "m²", "m³", "days", "months", "sessions", "sets", "liters", "kg", "Other…"]
     UNIT_OTHER_SENTINEL = "Other…"
 
-    # Pagination
     ROWS_PER_PAGE_OPTIONS = [10, 20, 50, 100]
 
 
 # =============================================================================
-# Styling
+# Styling (stable)
 # =============================================================================
 def _inject_css() -> None:
+    # idempotent; safe on every rerun
     st.markdown(
         """
-        <style>
-          [data-testid="stVerticalBlock"] { gap: 0.70rem; }
+<style>
+  [data-testid="stVerticalBlock"] { gap: 0.70rem; }
 
-          .t6-rowcard {
-            border: 1px solid rgba(255,255,255,0.12);
-            border-radius: 14px;
-            padding: 14px;
-            background: rgba(255,255,255,0.02);
-            margin: 10px 0 12px 0;
-          }
+  .t6-rowcard{
+    border: 1px solid rgba(255,255,255,0.12);
+    border-radius: 14px;
+    padding: 14px;
+    background: rgba(255,255,255,0.02);
+    margin: 10px 0 12px 0;
+  }
+  .t6-rowcard .t6-title{
+    font-weight: 700;
+    margin-bottom: 6px;
+  }
+  .t6-btnrow [data-testid="stHorizontalBlock"] { align-items: center; }
+  div[data-testid="stExpander"] > details { border-radius: 14px !important; }
 
-          .t6-rowcard .t6-title {
-            font-weight: 700;
-            margin-bottom: 6px;
-          }
+  /* keep controls stable width */
+  div[data-testid="stTextInput"] input,
+  div[data-testid="stTextArea"] textarea,
+  div[data-testid="stSelectbox"] div[role="combobox"],
+  div[data-testid="stNumberInput"] input { width: 100% !important; }
 
-          .t6-btnrow [data-testid="stHorizontalBlock"] { align-items: center; }
-
-          div[data-testid="stExpander"] > details { border-radius: 14px !important; }
-
-          div[data-testid="stTextInput"] input,
-          div[data-testid="stTextArea"] textarea,
-          div[data-testid="stSelectbox"] div[role="combobox"],
-          div[data-testid="stNumberInput"] input {
-            width: 100% !important;
-          }
-
-          label, .st-emotion-cache-1p1nwyz, .st-emotion-cache-1y4p8pa { line-height: 1.15; }
-        </style>
-        """,
+  label { line-height: 1.15; }
+</style>
+""",
         unsafe_allow_html=True,
     )
 
@@ -99,7 +94,6 @@ def _s(v: Any) -> str:
 
 
 def _key(*parts: Any) -> str:
-    # FULL md5 to avoid collisions in large sessions
     raw = ".".join(str(p) for p in parts)
     h = hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()
     return f"t6.s5.{h}"
@@ -109,6 +103,7 @@ def strip_heading_numbering(text: str) -> str:
     t = _s(text)
     if not t:
         return ""
+    # remove typical "5.1.2." prefixes etc.
     t = re.sub(r"^\s*\(?\d+(\.\d+)*\)?\s*[\.\)\-:]\s*", "", t)
     t = re.sub(r"^\s*\d+(\.\d+)*\s+", "", t)
     return t.strip()
@@ -126,10 +121,11 @@ def _safe_float(v: Any) -> float:
 
 
 def _num_to_str(v: float) -> str:
-    s = str(v)
-    if s.endswith(".0"):
-        s = s[:-2]
-    return s
+    # stable storage without trailing .0
+    s2 = str(v)
+    if s2.endswith(".0"):
+        s2 = s2[:-2]
+    return s2
 
 
 def _titles_from_step3() -> List[str]:
@@ -149,6 +145,7 @@ def _titles_from_step3() -> List[str]:
             if t:
                 titles.append(t)
 
+    # dedup keep order
     seen = set()
     out: List[str] = []
     for t in titles:
@@ -164,6 +161,9 @@ def _titles_hash(titles: List[str]) -> str:
     return hashlib.sha1(blob).hexdigest()
 
 
+# =============================================================================
+# Row schema
+# =============================================================================
 def _default_row(i: int) -> Dict[str, str]:
     return {
         "No.": str(i),
@@ -172,9 +172,9 @@ def _default_row(i: int) -> Dict[str, str]:
         "Planned Unit": "",
         "Achieved": "0",
         "Achieved Unit": "",
-        "Progress": "",
+        "Progress": "",              # stored text, e.g. "60%"
         "Remarks": "",
-        "Override Progress": "0",  # "0"/"1"
+        "Override Progress": "0",     # "0"/"1"
     }
 
 
@@ -191,8 +191,13 @@ def _default_rows_from_titles(titles: List[str]) -> List[Dict[str, str]]:
 
 
 def _normalize_rows(rows: Any) -> List[Dict[str, str]]:
+    """
+    Normalize storage to stable string schema.
+    IMPORTANT: does NOT touch widget states (prevents UI jumping).
+    """
     if not isinstance(rows, list):
         rows = []
+
     out: List[Dict[str, str]] = []
     for i, r in enumerate(rows, start=1):
         if not isinstance(r, dict):
@@ -207,13 +212,18 @@ def _normalize_rows(rows: Any) -> List[Dict[str, str]]:
                 "Achieved Unit": _s(r.get("Achieved Unit")),
                 "Progress": _s(r.get("Progress")),
                 "Remarks": _s(r.get("Remarks")),
-                "Override Progress": "1" if _s(r.get("Override Progress")) in ("1", "true", "True", "yes", "Yes") else "0",
+                "Override Progress": "1"
+                if _s(r.get("Override Progress")) in ("1", "true", "True", "yes", "Yes")
+                else "0",
             }
         )
+
     if not out:
         out = _default_rows_from_titles([])
+
     for i, r in enumerate(out, start=1):
         r["No."] = str(i)
+
     return out
 
 
@@ -258,7 +268,7 @@ def _row_warnings(planned: float, achieved: float, p_unit: str, a_unit: str) -> 
 
 
 # =============================================================================
-# State init (minimal work each rerun)
+# State init (stable)
 # =============================================================================
 def _ensure_state() -> None:
     ss = st.session_state
@@ -295,7 +305,8 @@ def _ensure_state() -> None:
 def _sync_rows_if_titles_changed() -> None:
     """
     Sync from Step 3 only when titles changed.
-    Keeps user-entered values when matching activities exist.
+    Keeps user-entered values when matching Activities exist.
+    NOTE: does NOT touch UI keys, only SS_WORK data => design won't "jump".
     """
     titles = _titles_from_step3()
     h = _titles_hash(titles)
@@ -327,6 +338,7 @@ def _sync_rows_if_titles_changed() -> None:
         row["No."] = str(i)
         new_rows.append(row)
 
+    # keep extra user rows (not in titles) at bottom
     used = set(strip_heading_numbering(t) or t for t in titles)
     extras = [r for r in cur if _s(r.get("Activities")) and _s(r.get("Activities")) not in used]
     for r in extras:
@@ -336,19 +348,11 @@ def _sync_rows_if_titles_changed() -> None:
 
     st.session_state[SS_WORK] = _normalize_rows(new_rows)
     st.session_state[SS_TITLES_HASH] = h
-    # keep page stable but safe
-    st.session_state[SS_PAGE] = max(1, int(st.session_state.get(SS_PAGE, 1)))
 
 
 # =============================================================================
-# Row operations (fast, in-place, minimal normalize)
+# Row ops (data only)
 # =============================================================================
-def _reindex_rows_inplace() -> None:
-    rows = st.session_state.get(SS_WORK, []) or []
-    rows = _normalize_rows(rows)
-    st.session_state[SS_WORK] = rows
-
-
 def _add_empty_row() -> None:
     rows = _normalize_rows(st.session_state.get(SS_WORK, []))
     rows.append(_default_row(len(rows) + 1))
@@ -362,7 +366,6 @@ def _remove_row(idx_0based: int) -> None:
     if not rows:
         rows = _default_rows_from_titles([])
     st.session_state[SS_WORK] = _normalize_rows(rows)
-    # clamp page later in paginator
 
 
 def _duplicate_row(idx_0based: int) -> None:
@@ -389,11 +392,7 @@ def _apply_search_filter(rows: List[Dict[str, str]], query: str) -> List[int]:
     q = _s(query).lower()
     if not q:
         return list(range(len(rows)))
-    idxs: List[int] = []
-    for i, r in enumerate(rows):
-        if q in _s(r.get("Activities")).lower():
-            idxs.append(i)
-    return idxs
+    return [i for i, r in enumerate(rows) if q in _s(r.get("Activities")).lower()]
 
 
 def _paginate(indices: List[int], rows_per_page: int, page: int) -> Tuple[List[int], int, int]:
@@ -408,7 +407,7 @@ def _paginate(indices: List[int], rows_per_page: int, page: int) -> Tuple[List[i
 
 
 # =============================================================================
-# Ultra-fast row update callbacks (no full-table rebuild)
+# Row callbacks (write only the changed field)
 # =============================================================================
 def _ensure_row_index(i: int) -> None:
     rows = st.session_state.get(SS_WORK, []) or []
@@ -416,11 +415,10 @@ def _ensure_row_index(i: int) -> None:
         st.session_state[SS_WORK] = _default_rows_from_titles([])
         return
     if i < 0 or i >= len(rows):
-        _reindex_rows_inplace()
+        st.session_state[SS_WORK] = _normalize_rows(rows)
 
 
 def _maybe_autoset_progress(i: int) -> None:
-    """If auto-calc ON and override OFF => update progress widgets + stored Progress."""
     _ensure_row_index(i)
     rows: List[Dict[str, str]] = st.session_state.get(SS_WORK, []) or []
     if not (0 <= i < len(rows)):
@@ -435,7 +433,6 @@ def _maybe_autoset_progress(i: int) -> None:
     achieved = _safe_float(rows[i].get("Achieved"))
     pct = _calc_progress(planned, achieved)
 
-    # sync widget states
     st.session_state[_key("p_slider", i)] = int(pct)
     st.session_state[_key("p_number", i)] = int(pct)
     rows[i]["Progress"] = _format_progress(int(pct))
@@ -495,24 +492,26 @@ def _on_progress_number_changed(i: int) -> None:
 
 
 # =============================================================================
-# Unit picker (fast + stable keys per row/field)
+# Unit picker (stable keys + no rerun loops)
 # =============================================================================
 def _unit_picker(label: str, *, i: int, field: str, current: str) -> str:
+    """
+    Returns the selected unit text.
+    IMPORTANT: This does not write to SS_WORK. Caller writes only if changed.
+    """
     cur = _s(current)
     sel_key = _key("unit_sel", field, i)
     other_key = _key("unit_other", field, i)
 
     if cur in UIConfig.UNIT_PRESETS:
-        sel = cur
-        other_val = ""
+        sel_init = cur
+        other_init = ""
     else:
-        sel = UIConfig.UNIT_OTHER_SENTINEL
-        other_val = cur
+        sel_init = UIConfig.UNIT_OTHER_SENTINEL
+        other_init = cur
 
-    if sel_key not in st.session_state:
-        st.session_state[sel_key] = sel
-    if other_key not in st.session_state:
-        st.session_state[other_key] = other_val
+    st.session_state.setdefault(sel_key, sel_init)
+    st.session_state.setdefault(other_key, other_init)
 
     selected = st.selectbox(label, options=UIConfig.UNIT_PRESETS, key=sel_key)
     if selected == UIConfig.UNIT_OTHER_SENTINEL:
@@ -521,8 +520,16 @@ def _unit_picker(label: str, *, i: int, field: str, current: str) -> str:
     return _s(selected)
 
 
+def _set_row_field_if_changed(i: int, field: str, new_value: str) -> None:
+    rows: List[Dict[str, str]] = st.session_state.get(SS_WORK, []) or []
+    if 0 <= i < len(rows):
+        if _s(rows[i].get(field)) != _s(new_value):
+            rows[i][field] = _s(new_value)
+            st.session_state[SS_WORK] = rows
+
+
 # =============================================================================
-# Fragments (reduce recompute scope)
+# Fragments (minimize UI rebuild)
 # =============================================================================
 @st.fragment
 def _toolbar_fragment() -> None:
@@ -558,12 +565,7 @@ def _toolbar_fragment() -> None:
 
     with c5:
         prev = _s(st.session_state.get(SS_SEARCH, ""))
-        search_q = st.text_input(
-            "Search Activities",
-            value=prev,
-            key=_key("search"),
-            placeholder="Type to filter…",
-        )
+        search_q = st.text_input("Search Activities", value=prev, key=_key("search"), placeholder="Type to filter…")
         if _s(search_q) != prev:
             st.session_state[SS_PAGE] = 1
         st.session_state[SS_SEARCH] = _s(search_q)
@@ -629,22 +631,22 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
         return
     r = rows[i_global]
 
-    # container choice
+    # container choice (stable)
     if view_mode == "Compact":
         header = f"Row {i_global + 1}: {_s(r.get('Activities')) or '(no activity)'}"
         container_ctx = st.expander(header, expanded=not collapse_all)
-        card_wrap = False
+        wrap_card = False
     else:
         container_ctx = st.container()
-        card_wrap = True
+        wrap_card = True
 
     with container_ctx:
-        if card_wrap:
+        if wrap_card:
             st.markdown("<div class='t6-rowcard'>", unsafe_allow_html=True)
             title = f"Row {i_global + 1}" if UIConfig.SHOW_ROW_NUMBERS else "Row"
             st.markdown(f"<div class='t6-title'>{title}</div>", unsafe_allow_html=True)
 
-        # actions
+        # actions row
         st.markdown("<div class='t6-btnrow'>", unsafe_allow_html=True)
         h1, h2, h3, h4, h5 = st.columns([4.8, 1.2, 1.2, 1.2, 1.2], gap="small")
         with h1:
@@ -659,13 +661,12 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
             st.button("Remove", use_container_width=True, key=_key("rm", i_global), on_click=_remove_row, args=(i_global,))
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # inputs (all on_change write directly into SS_WORK)
+        # inputs
         colA, colB, colC, colD, colE = st.columns([3.2, 2.4, 2.4, 2.2, 2.8], gap="small")
 
         with colA:
             act_key = _key("act", i_global)
-            if act_key not in st.session_state:
-                st.session_state[act_key] = _s(r.get("Activities"))
+            st.session_state.setdefault(act_key, _s(r.get("Activities")))
             st.text_input(
                 "Activities",
                 key=act_key,
@@ -678,8 +679,7 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
             p1, p2 = st.columns([2.0, 1.5], gap="small")
             with p1:
                 planned_key = _key("planned", i_global)
-                if planned_key not in st.session_state:
-                    st.session_state[planned_key] = float(_safe_float(r.get("Planned")))
+                st.session_state.setdefault(planned_key, float(_safe_float(r.get("Planned"))))
                 st.number_input(
                     "Planned",
                     min_value=UIConfig.VALUE_MIN,
@@ -691,18 +691,13 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
                 )
             with p2:
                 planned_unit = _unit_picker("Planned Unit", i=i_global, field="Planned Unit", current=_s(r.get("Planned Unit")))
-                # write unit into row (cheap)
-                rows = st.session_state.get(SS_WORK, []) or []
-                if 0 <= i_global < len(rows):
-                    rows[i_global]["Planned Unit"] = _s(planned_unit)
-                    st.session_state[SS_WORK] = rows
+                _set_row_field_if_changed(i_global, "Planned Unit", planned_unit)
 
         with colC:
             a1, a2 = st.columns([2.0, 1.5], gap="small")
             with a1:
                 achieved_key = _key("achieved", i_global)
-                if achieved_key not in st.session_state:
-                    st.session_state[achieved_key] = float(_safe_float(r.get("Achieved")))
+                st.session_state.setdefault(achieved_key, float(_safe_float(r.get("Achieved"))))
                 st.number_input(
                     "Achieved",
                     min_value=UIConfig.VALUE_MIN,
@@ -714,18 +709,14 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
                 )
             with a2:
                 achieved_unit = _unit_picker("Achieved Unit", i=i_global, field="Achieved Unit", current=_s(r.get("Achieved Unit")))
-                rows = st.session_state.get(SS_WORK, []) or []
-                if 0 <= i_global < len(rows):
-                    rows[i_global]["Achieved Unit"] = _s(achieved_unit)
-                    st.session_state[SS_WORK] = rows
+                _set_row_field_if_changed(i_global, "Achieved Unit", achieved_unit)
 
         with colD:
-            rows = st.session_state.get(SS_WORK, []) or []
-            r = rows[i_global] if (0 <= i_global < len(rows)) else r
+            rows_now = st.session_state.get(SS_WORK, []) or []
+            r_now = rows_now[i_global] if (0 <= i_global < len(rows_now)) else r
 
             override_key = _key("override", i_global)
-            if override_key not in st.session_state:
-                st.session_state[override_key] = (_s(r.get("Override Progress")) == "1")
+            st.session_state.setdefault(override_key, (_s(r_now.get("Override Progress")) == "1"))
 
             override_manual = st.toggle(
                 "Override manual progress",
@@ -737,27 +728,21 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
             )
 
             row_is_auto = bool(auto_calc) and (not bool(override_manual))
-
-            planned = _safe_float(r.get("Planned"))
-            achieved = _safe_float(r.get("Achieved"))
-            pct = _calc_progress(planned, achieved) if row_is_auto else _parse_progress_percent(_s(r.get("Progress")))
+            planned = _safe_float(r_now.get("Planned"))
+            achieved = _safe_float(r_now.get("Achieved"))
+            pct = _calc_progress(planned, achieved) if row_is_auto else _parse_progress_percent(_s(r_now.get("Progress")))
 
             slider_key = _key("p_slider", i_global)
             number_key = _key("p_number", i_global)
 
-            if slider_key not in st.session_state:
-                st.session_state[slider_key] = int(pct)
-            if number_key not in st.session_state:
-                st.session_state[number_key] = int(pct)
+            st.session_state.setdefault(slider_key, int(pct))
+            st.session_state.setdefault(number_key, int(pct))
 
-            # if auto, force sync state (cheap)
             if row_is_auto:
+                # force sync without rerun jumps (no st.rerun here)
                 st.session_state[slider_key] = int(pct)
                 st.session_state[number_key] = int(pct)
-                rows = st.session_state.get(SS_WORK, []) or []
-                if 0 <= i_global < len(rows):
-                    rows[i_global]["Progress"] = _format_progress(int(pct))
-                    st.session_state[SS_WORK] = rows
+                _set_row_field_if_changed(i_global, "Progress", _format_progress(int(pct)))
 
             st.slider(
                 "Progress (%)",
@@ -788,8 +773,7 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
 
         with colE:
             remarks_key = _key("remarks", i_global)
-            if remarks_key not in st.session_state:
-                st.session_state[remarks_key] = _s(r.get("Remarks"))
+            st.session_state.setdefault(remarks_key, _s(r.get("Remarks")))
             st.text_input(
                 "Remarks",
                 key=remarks_key,
@@ -798,20 +782,20 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
                 args=(i_global, "Remarks", remarks_key),
             )
 
-        # Warnings (only for visible rows => fast)
-        rows = st.session_state.get(SS_WORK, []) or []
-        r = rows[i_global] if (0 <= i_global < len(rows)) else r
+        # warnings (only visible rows)
+        rows_now = st.session_state.get(SS_WORK, []) or []
+        r_now = rows_now[i_global] if (0 <= i_global < len(rows_now)) else r
         warn_list = _row_warnings(
-            planned=_safe_float(r.get("Planned")),
-            achieved=_safe_float(r.get("Achieved")),
-            p_unit=_s(r.get("Planned Unit")),
-            a_unit=_s(r.get("Achieved Unit")),
+            planned=_safe_float(r_now.get("Planned")),
+            achieved=_safe_float(r_now.get("Achieved")),
+            p_unit=_s(r_now.get("Planned Unit")),
+            a_unit=_s(r_now.get("Achieved Unit")),
         )
         if warn_list:
             for w in warn_list:
                 st.warning(w)
 
-        if card_wrap:
+        if wrap_card:
             st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -820,49 +804,51 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
 # =============================================================================
 def render_step(ctx: Tool6Context, **_) -> bool:
     _ = ctx
+
     _ensure_state()
     _inject_css()
 
+    # NOTE:
+    # - We avoid any st.rerun() in normal flow except explicit actions (Reset/Add/Move/etc.)
+    # - Widgets keys are stable via md5 => layout won't "jump" when moving to next step.
+
     with st.container(border=True):
-        # Sync (runs only when titles hash changes)
         _sync_rows_if_titles_changed()
 
-        # Ensure rows normalized exactly once per run
+        # Normalize once per run
         st.session_state[SS_WORK] = _normalize_rows(st.session_state.get(SS_WORK, []))
         rows = st.session_state[SS_WORK]
 
-        # Top toolbar (fragment)
         _toolbar_fragment()
         st.divider()
 
-        # KPIs (fragment)
         total_rows, warn_count = _kpis_fragment(rows)
         st.divider()
 
-        # Filter + paginate (cheap)
         search_q = _s(st.session_state.get(SS_SEARCH, ""))
         filtered_indices = _apply_search_filter(rows, search_q)
 
         page = int(st.session_state.get(SS_PAGE, 1))
         rpp = int(st.session_state.get(SS_ROWS_PER_PAGE, 20))
         page_indices, total_pages, total_filtered = _paginate(filtered_indices, rpp, page)
+
+        # clamp page safely (no rerun)
         st.session_state[SS_PAGE] = max(1, min(total_pages, page))
 
-        # Pagination controls (fragment)
         _pagination_fragment(total_filtered, total_pages)
         st.divider()
 
-        # Render visible rows only (each row as fragment => faster perceived UI)
         view_mode = st.session_state.get(SS_VIEW_MODE, "Cards")
         collapse_all = bool(st.session_state.get(SS_COLLAPSE_ALL, False))
         auto_calc = bool(st.session_state.get(SS_AUTO_PROGRESS, False))
 
+        # render only visible rows
         for i_global in page_indices:
             _render_row_fragment(i_global, view_mode=view_mode, collapse_all=collapse_all, auto_calc=auto_calc)
 
-        # Status (cheap)
-        rows = st.session_state.get(SS_WORK, []) or []
-        has_any = any(_s(r.get("Activities")) for r in rows if isinstance(r, dict))
+        # Status
+        rows_now = st.session_state.get(SS_WORK, []) or []
+        has_any = any(_s(r.get("Activities")) for r in rows_now if isinstance(r, dict))
 
         if has_any:
             if warn_count > 0:
