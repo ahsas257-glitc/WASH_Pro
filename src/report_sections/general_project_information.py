@@ -2,36 +2,40 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Dict, Optional, List, Union, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 from docx.document import Document
-from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
-from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.enum.section import WD_SECTION
+from docx.enum.table import WD_ALIGN_VERTICAL, WD_TABLE_ALIGNMENT
+from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
-from docx.shared import Inches, RGBColor, Mm, Pt
+from docx.shared import Inches, Mm, Pt, RGBColor
 from docx.text.paragraph import Paragraph
 
 
 # ============================================================
-# Inline helpers (replacing src.report_sections._word_common)
+# Small core helpers (string + formatting)
 # ============================================================
 def s(v: Any) -> str:
     return "" if v is None else str(v).strip()
 
 
-def _is_nonempty(v: Any) -> bool:
+def na(v: Any) -> str:
     sv = s(v)
-    return sv not in ("", " ")
+    return sv if sv else "N/A"
 
 
+def _is_nonempty(v: Any) -> bool:
+    return bool(s(v))
+
+
+# ============================================================
+# Bool-like parsing and checkbox rendering
+# ============================================================
 def parse_bool_like(v: Any) -> Optional[bool]:
-    """
-    Returns True/False/None for common bool-like inputs.
-    Handles: bool, 0/1, yes/no, checked/unchecked, ✅/❌, etc.
-    """
     if v is None:
         return None
     if isinstance(v, bool):
@@ -52,10 +56,6 @@ def parse_bool_like(v: Any) -> Optional[bool]:
 
 
 def _truthy_doc(v: Any) -> bool:
-    """
-    For document fields: treat True/1/yes as available,
-    also treat any non-empty string (file name/url) as available.
-    """
     b = parse_bool_like(v)
     if b is True:
         return True
@@ -64,6 +64,23 @@ def _truthy_doc(v: Any) -> bool:
     return _is_nonempty(v)
 
 
+def _checkbox(checked: bool) -> str:
+    return "☒" if checked else "☐"
+
+
+def three_option_checkbox_line(value: Any, opt1: str, opt2: str, opt3: str) -> str:
+    sv = s(value).lower()
+
+    def match(opt: str) -> bool:
+        o = opt.lower().strip()
+        return sv == o or (sv and o in sv)
+
+    return f"{_checkbox(match(opt1))} {opt1}   {_checkbox(match(opt2))} {opt2}   {_checkbox(match(opt3))} {opt3}"
+
+
+# ============================================================
+# Word layout helpers
+# ============================================================
 def tight_paragraph(
     p: Paragraph,
     *,
@@ -100,16 +117,7 @@ def set_run(run, font: str, size: Union[int, float], bold: bool = False, color: 
             pass
 
 
-# -------------------------
-# Standard H1 title (TOC + orange line)
-# -------------------------
-def _set_paragraph_bottom_border(
-    paragraph: Paragraph,
-    *,
-    color_hex: str,
-    size_eighths: int = 12,
-    space: int = 2,
-) -> None:
+def _set_paragraph_bottom_border(paragraph: Paragraph, *, color_hex: str, size_eighths: int = 12, space: int = 2) -> None:
     pPr = paragraph._p.get_or_add_pPr()
     pBdr = pPr.find(qn("w:pBdr"))
     if pBdr is None:
@@ -137,9 +145,6 @@ def add_section_title_h1(
     orange_hex: str = "ED7D31",
     after_pt: float = 6,
 ) -> Paragraph:
-    """
-    ✅ Heading 1 (TOC-friendly) + size 16 + blue text + orange underline line.
-    """
     p = doc.add_paragraph()
     try:
         p.style = "Heading 1"
@@ -149,16 +154,11 @@ def add_section_title_h1(
     run = p.add_run(s(text))
     set_run(run, font, size, bold=True, color=color)
     tight_paragraph(p, align=WD_ALIGN_PARAGRAPH.LEFT, before_pt=0, after_pt=float(after_pt), line_spacing=1.0)
-
     _set_paragraph_bottom_border(p, color_hex=orange_hex, size_eighths=12, space=2)
     return p
 
 
-# -------------------------
-# Table/layout helpers
-# -------------------------
 def _emu_to_twips(emu: int) -> int:
-    # 1 inch = 914400 EMU = 1440 twips => twips = emu / 635
     return int(round(int(emu) / 635.0))
 
 
@@ -173,9 +173,6 @@ def set_table_fixed_layout(table) -> None:
 
 
 def set_table_width_exact(table, width) -> None:
-    """
-    Set exact table width (width is a docx.shared.Length e.g. Inches()).
-    """
     width_emu = int(width.emu)
     tbl = table._tbl
     tblPr = tbl.tblPr
@@ -187,7 +184,6 @@ def set_table_width_exact(table, width) -> None:
     tblW.set(qn("w:type"), "dxa")
     tblW.set(qn("w:w"), str(_emu_to_twips(width_emu)))
 
-    # Remove indent
     tblInd = tblPr.find(qn("w:tblInd"))
     if tblInd is None:
         tblInd = OxmlElement("w:tblInd")
@@ -216,6 +212,21 @@ def set_table_borders(table, *, color_hex: str = "A6A6A6") -> None:
         el.set(qn("w:color"), color_hex)
 
 
+def set_table_columns_exact(table, widths_in: List[float]) -> None:
+    tbl = table._tbl
+    tblGrid = tbl.tblGrid
+    gridCols = tblGrid.findall(qn("w:gridCol"))
+
+    while len(gridCols) < len(widths_in):
+        gc = OxmlElement("w:gridCol")
+        tblGrid.append(gc)
+        gridCols = tblGrid.findall(qn("w:gridCol"))
+
+    for i, w_in in enumerate(widths_in):
+        w_emu = int(Inches(float(w_in)).emu)
+        gridCols[i].set(qn("w:w"), str(_emu_to_twips(w_emu)))
+
+
 def shade_cell(cell, fill_hex: str) -> None:
     fill_hex = s(fill_hex).replace("#", "") or "FFFFFF"
     tc_pr = cell._tc.get_or_add_tcPr()
@@ -229,9 +240,6 @@ def shade_cell(cell, fill_hex: str) -> None:
 
 
 def set_cell_margins(cell, top_dxa: int, bottom_dxa: int, left_dxa: int, right_dxa: int) -> None:
-    """
-    DXA margins. Uses start/end to be RTL-friendly.
-    """
     tcPr = cell._tc.get_or_add_tcPr()
     tcMar = tcPr.find(qn("w:tcMar"))
     if tcMar is None:
@@ -252,50 +260,6 @@ def set_cell_margins(cell, top_dxa: int, bottom_dxa: int, left_dxa: int, right_d
     _set("end", int(right_dxa))
 
 
-def set_row_cant_split(row, *, cant_split: bool = True) -> None:
-    tr = row._tr
-    trPr = tr.get_or_add_trPr()
-    existing = trPr.find(qn("w:cantSplit"))
-    if cant_split:
-        if existing is None:
-            trPr.append(OxmlElement("w:cantSplit"))
-    else:
-        if existing is not None:
-            trPr.remove(existing)
-
-
-def set_repeat_table_header(row) -> None:
-    """
-    Repeat this row as table header on next page(s).
-    """
-    tr = row._tr
-    trPr = tr.get_or_add_trPr()
-    tblHeader = trPr.find(qn("w:tblHeader"))
-    if tblHeader is None:
-        tblHeader = OxmlElement("w:tblHeader")
-        trPr.append(tblHeader)
-    tblHeader.set(qn("w:val"), "true")
-
-
-def set_table_columns_exact(table, widths_in: List[float]) -> None:
-    """
-    Lock grid columns precisely (in inches).
-    """
-    tbl = table._tbl
-    tblGrid = tbl.tblGrid
-    gridCols = tblGrid.findall(qn("w:gridCol"))
-
-    while len(gridCols) < len(widths_in):
-        gc = OxmlElement("w:gridCol")
-        tblGrid.append(gc)
-        gridCols = tblGrid.findall(qn("w:gridCol"))
-
-    for i, w_in in enumerate(widths_in):
-        w_emu = int(Inches(float(w_in)).emu)
-        w_tw = _emu_to_twips(w_emu)
-        gridCols[i].set(qn("w:w"), str(w_tw))
-
-
 def write_cell_text(
     cell,
     text: Any,
@@ -312,20 +276,40 @@ def write_cell_text(
     set_run(r, font, size, bold=bold)
 
 
-# -------------------------
-# Formatting helpers
-# -------------------------
-def na_if_empty(v: Any) -> str:
-    sv = s(v)
-    return sv if sv else "N/A"
+def write_yes_no_checkboxes(cell, value: Any, *, font_size: int = 11, align=WD_ALIGN_PARAGRAPH.LEFT, font: str = "Times New Roman") -> None:
+    b = parse_bool_like(value)
+    yes = (b is True)
+    no = (b is False)
+
+    cell.text = ""
+    p = cell.paragraphs[0]
+    tight_paragraph(p, align=align, before_pt=0, after_pt=0, line_spacing=1.0)
+    r = p.add_run(f"{_checkbox(yes)} Yes   {_checkbox(no)} No")
+    set_run(r, font, font_size, bold=False)
 
 
+def write_two_option_checkboxes(cell, value: Any, opt1: str, opt2: str, *, font_size: int = 11, align=WD_ALIGN_PARAGRAPH.LEFT, font: str = "Times New Roman") -> None:
+    sv = s(value).lower().strip()
+    o1 = opt1.lower().strip()
+    o2 = opt2.lower().strip()
+    c1 = bool(sv) and (sv == o1 or o1 in sv)
+    c2 = bool(sv) and (sv == o2 or o2 in sv)
+
+    cell.text = ""
+    p = cell.paragraphs[0]
+    tight_paragraph(p, align=align, before_pt=0, after_pt=0, line_spacing=1.0)
+    r = p.add_run(f"{_checkbox(c1)} {opt1}   {_checkbox(c2)} {opt2}")
+    set_run(r, font, font_size, bold=False)
+
+
+# ============================================================
+# Data formatting helpers (isolated)
+# ============================================================
 def format_af_phone(v: Any) -> str:
     sv = s(v)
     if not sv:
         return ""
     digits = re.sub(r"\D+", "", sv)
-
     if len(digits) == 10 and digits.startswith("0"):
         return "+93" + digits[1:]
     if digits.startswith("93") and len(digits) in (11, 12):
@@ -367,145 +351,9 @@ def format_date_dd_mon_yyyy(value: Any) -> str:
     return sv.split(" ")[0] if " " in sv else sv
 
 
-# -------------------------
-# Checkbox rendering helpers
-# -------------------------
-def _checkbox(checked: bool) -> str:
-    return "☒" if checked else "☐"
-
-
-def three_option_checkbox_line(value: Any, opt1: str, opt2: str, opt3: str) -> str:
-    sv = s(value).lower()
-
-    def match(opt: str) -> bool:
-        o = opt.lower().strip()
-        return sv == o or (sv and o in sv)
-
-    c1 = match(opt1)
-    c2 = match(opt2)
-    c3 = match(opt3)
-    return f"{_checkbox(c1)} {opt1}   {_checkbox(c2)} {opt2}   {_checkbox(c3)} {opt3}"
-
-
-def write_yes_no_checkboxes(
-    cell,
-    value: Any,
-    *,
-    font_size: int = 11,
-    align=WD_ALIGN_PARAGRAPH.LEFT,
-    font: str = "Times New Roman",
-) -> None:
-    b = parse_bool_like(value)
-    yes = (b is True)
-    no = (b is False)
-
-    cell.text = ""
-    p = cell.paragraphs[0]
-    tight_paragraph(p, align=align, before_pt=0, after_pt=0, line_spacing=1.0)
-    r = p.add_run(f"{_checkbox(yes)} Yes   {_checkbox(no)} No")
-    set_run(r, font, font_size, bold=False)
-
-
-def write_two_option_checkboxes(
-    cell,
-    value: Any,
-    opt1: str,
-    opt2: str,
-    *,
-    font_size: int = 11,
-    align=WD_ALIGN_PARAGRAPH.LEFT,
-    font: str = "Times New Roman",
-) -> None:
-    sv = s(value).lower().strip()
-    o1 = opt1.lower().strip()
-    o2 = opt2.lower().strip()
-
-    c1 = bool(sv) and (sv == o1 or o1 in sv)
-    c2 = bool(sv) and (sv == o2 or o2 in sv)
-
-    cell.text = ""
-    p = cell.paragraphs[0]
-    tight_paragraph(p, align=align, before_pt=0, after_pt=0, line_spacing=1.0)
-    r = p.add_run(f"{_checkbox(c1)} {opt1}   {_checkbox(c2)} {opt2}")
-    set_run(r, font, font_size, bold=False)
-
-
 # ============================================================
-# ✅ FIXED: borderless inner table + no empty first row
+# Config (easy to extend)
 # ============================================================
-def add_available_documents_inner_table(cell, row: Dict[str, Any], data_keys: Dict[str, str]) -> None:
-    """
-    Creates a small inner table listing available documents with Yes/No checkboxes.
-
-    FIXES:
-      - No extra blank first row (rows=len(docs))
-      - Inner table has NO borders (uses parent cell/table border)
-      - Keeps layout stable via fixed layout + grid column widths
-    """
-    cell.text = ""
-
-    docs: List[Tuple[str, Any]] = [
-        ("Contract", row.get(data_keys.get("DOC_CONTRACT", ""), row.get("B3_Contract"))),
-        ("Journal", row.get(data_keys.get("DOC_JOURNAL", ""), row.get("B4_Journal"))),
-        ("BOQ", row.get(data_keys.get("DOC_BOQ", ""), row.get("D2_boq_available"))),
-        ("Design drawings", row.get(data_keys.get("DOC_DRAWINGS", ""), row.get("B1_Design_drawings"))),
-        ("Site engineer", row.get(data_keys.get("DOC_SITE_ENGINEER", ""), row.get("B6_Site_engineer"))),
-        ("Geophysical tests", row.get(data_keys.get("DOC_GEOPHYSICAL", ""), row.get("D3_geophysical_tests_available"))),
-        ("Water quality tests", row.get(data_keys.get("DOC_WQ_TEST", ""), row.get("D4_water_quality_tests_available"))),
-        ("Pump test results", row.get(data_keys.get("DOC_PUMP_TEST", ""), row.get("D4_pump_test_results_available"))),
-    ]
-
-    inner = cell.add_table(rows=len(docs), cols=2)
-    inner.autofit = False
-    inner.alignment = WD_TABLE_ALIGNMENT.LEFT
-
-    set_table_fixed_layout(inner)
-
-    # Remove borders completely (outer + inner)
-    tbl = inner._tbl
-    tbl_pr = tbl.tblPr
-    borders = tbl_pr.find(qn("w:tblBorders"))
-    if borders is None:
-        borders = OxmlElement("w:tblBorders")
-        tbl_pr.append(borders)
-
-    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
-        el = borders.find(qn(f"w:{edge}"))
-        if el is None:
-            el = OxmlElement(f"w:{edge}")
-            borders.append(el)
-        el.set(qn("w:val"), "nil")
-
-    # Lock inner grid columns (document list wider)
-    try:
-        set_table_columns_exact(inner, [3.2, 1.2])
-    except Exception:
-        pass
-
-    for i, (label, val) in enumerate(docs):
-        r = inner.rows[i]
-        c0, c1 = r.cells[0], r.cells[1]
-
-        c0.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-        c1.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-
-        # modest padding so content isn't glued to borders
-        set_cell_margins(c0, 40, 40, 80, 80)
-        set_cell_margins(c1, 40, 40, 80, 80)
-
-        write_cell_text(c0, label, font="Times New Roman", size=11, bold=False, align=WD_ALIGN_PARAGRAPH.LEFT)
-
-        available = _truthy_doc(val)
-        c1.text = ""
-        p = c1.paragraphs[0]
-        tight_paragraph(p, align=WD_ALIGN_PARAGRAPH.LEFT, before_pt=0, after_pt=0, line_spacing=1.0)
-        rrun = p.add_run(f"{_checkbox(available)} Yes   {_checkbox(not available)} No")
-        set_run(rrun, "Times New Roman", 11, bold=False)
-
-
-# -------------------------
-# Section-specific style only
-# -------------------------
 TITLE_TEXT = "1.  General Project Information:"
 TITLE_FONT = "Cambria"
 TITLE_SIZE = 16
@@ -519,13 +367,11 @@ HEADER_FILL_HEX = "E7EEF9"
 BORDER_HEX = "A6A6A6"
 
 FIELD_COL_WIDTH_IN = 2.30
+M_TOP, M_BOTTOM, M_LEFT, M_RIGHT = 80, 80, 120, 120
 
-M_TOP = 80
-M_BOTTOM = 80
-M_LEFT = 120
-M_RIGHT = 120
 
-DATA_KEYS = {
+# Google-sheet keys used by this section (only the ones that matter here)
+DATA_KEYS: Dict[str, str] = {
     "PROVINCE": "A01_Province",
     "DISTRICT": "A02_District",
     "VILLAGE": "Village",
@@ -567,17 +413,79 @@ DATA_KEYS = {
     "ENV_RISK": "environmental_risk",
 }
 
+# IMPORTANT: override keys MUST match Step2 field labels exactly.
+OVK = {
+    "Province": "Province",
+    "District": "District",
+    "Village": "Village / Community",
+    "GPS": "GPS points",
+    "Project Name": "Project Name",
+    "Date of Visit": "Date of Visit",
+    "IP": "Name of the IP, Organization / NGO",
+    "Monitor Name": "Name of the monitor engineer",   # Step2 key
+    "Monitor Email": "Email of the monitor engineer",
+    "Respondent Name": "Name of the respondent (Participant / UNICEF / IPs)",
+    "Respondent Phone": "Contact Number of the Respondent",
+    "Respondent Email": "Email Address of the Respondent",
+    "Respondent Sex": "Sex of Respondent",
+    "Estimated Cost": "Estimated Project Cost",
+    "Contracted Cost": "Contracted Project Cost",
+    "Project Status": "Project Status",
+    "Reason Delay": "Reason for delay",
+    "Project Progress": "Project progress",
+    "Contract Start": "Contract Start Date",
+    "Contract End": "Contract End Date",
+    "Prev Prog": "Previous Physical Progress (%)",
+    "Curr Prog": "Current Physical Progress (%)",
+    "CDC": "CDC Code",
+    "Donor": "Donor Name",
+    "Report No": "Monitoring Report Number",
+    "Current Report Date": "Date of Current Report",
+    "Last Report Date": "Date of Last Monitoring Report",
+    "Sites": "Number of Sites Visited",
+    # Docs are stored as Yes/No per doc field name in Step2 (Contract, Journal, BOQ, Design drawings, ...)
+}
+
+# Documents: label in report -> sheet key fallback
+DOCS: List[Tuple[str, str]] = [
+    ("Contract", DATA_KEYS["DOC_CONTRACT"]),
+    ("Journal", DATA_KEYS["DOC_JOURNAL"]),
+    ("BOQ", DATA_KEYS["DOC_BOQ"]),
+    ("Design drawings", DATA_KEYS["DOC_DRAWINGS"]),
+    ("Site engineer", DATA_KEYS["DOC_SITE_ENGINEER"]),
+    ("Geophysical tests", DATA_KEYS["DOC_GEOPHYSICAL"]),
+    ("Water quality tests", DATA_KEYS["DOC_WQ_TEST"]),
+    ("Pump test results", DATA_KEYS["DOC_PUMP_TEST"]),
+]
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    label: str
+    override_key: Optional[str] = None
+    sheet_key: Optional[str] = None
+    formatter: Optional[Callable[[Any], str]] = None
+
+
+def _pick(overrides: Dict[str, Any], row: Dict[str, Any], *, override_key: Optional[str], sheet_key: Optional[str], fallback: Any = "") -> Any:
+    if override_key:
+        v = overrides.get(override_key, None)
+        if v is not None and s(v) != "":
+            return v
+    if sheet_key:
+        v2 = row.get(sheet_key, None)
+        if v2 is not None and s(v2) != "":
+            return v2
+    return fallback
+
 
 def _set_a4_narrow(section) -> None:
-    """A4 + Word 'Narrow' margins (0.5 inch = 12.7mm)."""
     section.page_width = Mm(210)
     section.page_height = Mm(297)
-
     section.top_margin = Mm(12.7)
     section.bottom_margin = Mm(12.7)
     section.left_margin = Mm(12.7)
     section.right_margin = Mm(12.7)
-
     section.header_distance = Mm(5)
     section.footer_distance = Mm(5)
 
@@ -587,6 +495,66 @@ def _usable_width_inches(section) -> float:
     return float(usable_emu) / 914400.0
 
 
+# ============================================================
+# Available documents inner table (borderless)
+# ============================================================
+def add_available_documents_inner_table(cell, *, row: Dict[str, Any], overrides: Dict[str, Any]) -> None:
+    cell.text = ""
+
+    docs: List[Tuple[str, Any]] = []
+    for label, sheet_key in DOCS:
+        # Step2 stores doc answers by label exactly (e.g., "Contract": "Yes"/"No")
+        v = overrides.get(label, None)
+        if v is None or s(v) == "":
+            v = row.get(sheet_key, None)
+        docs.append((label, v))
+
+    inner = cell.add_table(rows=len(docs), cols=2)
+    inner.autofit = False
+    inner.alignment = WD_TABLE_ALIGNMENT.LEFT
+    set_table_fixed_layout(inner)
+
+    # remove borders
+    tbl = inner._tbl
+    tbl_pr = tbl.tblPr
+    borders = tbl_pr.find(qn("w:tblBorders"))
+    if borders is None:
+        borders = OxmlElement("w:tblBorders")
+        tbl_pr.append(borders)
+    for edge in ("top", "left", "bottom", "right", "insideH", "insideV"):
+        el = borders.find(qn(f"w:{edge}"))
+        if el is None:
+            el = OxmlElement(f"w:{edge}")
+            borders.append(el)
+        el.set(qn("w:val"), "nil")
+
+    try:
+        set_table_columns_exact(inner, [3.2, 1.2])
+    except Exception:
+        pass
+
+    for i, (label, val) in enumerate(docs):
+        r = inner.rows[i]
+        c0, c1 = r.cells[0], r.cells[1]
+        c0.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+        c1.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
+
+        set_cell_margins(c0, 40, 40, 80, 80)
+        set_cell_margins(c1, 40, 40, 80, 80)
+
+        write_cell_text(c0, label, font=BODY_FONT, size=BODY_SIZE, bold=False, align=WD_ALIGN_PARAGRAPH.LEFT)
+
+        available = _truthy_doc(val)
+        c1.text = ""
+        p = c1.paragraphs[0]
+        tight_paragraph(p, align=WD_ALIGN_PARAGRAPH.LEFT, before_pt=0, after_pt=0, line_spacing=1.0)
+        rr = p.add_run(f"{_checkbox(available)} Yes   {_checkbox(not available)} No")
+        set_run(rr, BODY_FONT, BODY_SIZE, bold=False)
+
+
+# ============================================================
+# Main section
+# ============================================================
 def add_general_project_information(
     doc: Document,
     row: Dict[str, Any],
@@ -610,60 +578,57 @@ def add_general_project_information(
         after_pt=6,
     )
 
-    province = s(overrides.get("Province", row.get(DATA_KEYS["PROVINCE"])))
-    district = s(overrides.get("District", row.get(DATA_KEYS["DISTRICT"])))
-    village = s(overrides.get("Village / Community", row.get(DATA_KEYS["VILLAGE"])))
-
+    # ---- Build values (override first, then sheet) ----
     gps_lat = s(row.get(DATA_KEYS["GPS_LAT"]))
     gps_lon = s(row.get(DATA_KEYS["GPS_LON"]))
 
-    project_name = s(overrides.get("Project Name", row.get(DATA_KEYS["ACTIVITY_NAME"])))
-    visit_date = s(overrides.get("Date of Visit", format_date_dd_mon_yyyy(row.get(DATA_KEYS["STARTTIME"]))))
-    ip_name = s(overrides.get("Name of the IP, Organization / NGO", row.get(DATA_KEYS["PRIMARY_PARTNER"])))
-
-    monitor_name = s(overrides.get("Name of the monitor Engineer", row.get(DATA_KEYS["MONITOR_NAME"])))
-    monitor_email = s(overrides.get("Email of the monitor engineer", row.get(DATA_KEYS["MONITOR_EMAIL"])))
-
-    respondent_name = s(overrides.get("Name of the respondent (Participant / UNICEF / IPs)", row.get(DATA_KEYS["RESPONDENT_NAME"])))
-    respondent_phone = s(overrides.get("Contact Number of the Respondent", format_af_phone(row.get(DATA_KEYS["RESPONDENT_PHONE"]))))
-    respondent_email = s(overrides.get("Email Address of the Respondent", normalize_email_or_na_strict(row.get(DATA_KEYS["RESPONDENT_EMAIL"]))))
-
+    # Costs: keep your legacy logic
     cost_label = s(row.get(DATA_KEYS["PROJECT_COST_LABEL"])).lower()
     estimated_amount = s(row.get(DATA_KEYS["EST_COST_AMOUNT"]))
     contracted_amount = s(row.get(DATA_KEYS["CONTRACT_COST_AMOUNT"]))
-    estimated_cost = estimated_amount if "estimated" in cost_label else ""
-    contracted_cost = contracted_amount if "contract" in cost_label else ""
+    estimated_cost_sheet = estimated_amount if "estimated" in cost_label else ""
+    contracted_cost_sheet = contracted_amount if "contract" in cost_label else ""
 
-    project_status_val = overrides.get("Project Status", row.get(DATA_KEYS["PROJECT_STATUS_LABEL"]))
-    project_status = three_option_checkbox_line(project_status_val, "Ongoing", "Completed", "Suspended")
+    # community/work/env keys: keep legacy fallbacks too
+    community_sheet = row.get(DATA_KEYS["COMMUNITY_AGREEMENT"]) or row.get("Community_agreement")
+    work_sheet = row.get(DATA_KEYS["WORK_SAFETY"])
+    env_sheet = row.get(DATA_KEYS["ENV_RISK"])
 
-    reason_delay = s(overrides.get("Reason for delay", na_if_empty(row.get("B8_Reasons_for_delay"))))
+    specs: List[FieldSpec] = [
+        FieldSpec("Province", override_key=OVK["Province"], sheet_key=DATA_KEYS["PROVINCE"]),
+        FieldSpec("District", override_key=OVK["District"], sheet_key=DATA_KEYS["DISTRICT"]),
+        FieldSpec("Village / Community", override_key=OVK["Village"], sheet_key=DATA_KEYS["VILLAGE"]),
+        FieldSpec("GPS points", override_key=OVK["GPS"], sheet_key=None, formatter=lambda _: f"{gps_lat}, {gps_lon}".strip().strip(",")),
+        FieldSpec("Project Name", override_key=OVK["Project Name"], sheet_key=DATA_KEYS["ACTIVITY_NAME"]),
+        FieldSpec("Date of Visit", override_key=OVK["Date of Visit"], sheet_key=None, formatter=lambda _: s(overrides.get(OVK["Date of Visit"], format_date_dd_mon_yyyy(row.get(DATA_KEYS["STARTTIME"])) ))),
+        FieldSpec("Name of the IP, Organization / NGO", override_key=OVK["IP"], sheet_key=DATA_KEYS["PRIMARY_PARTNER"]),
+        FieldSpec("Name of the monitor Engineer", override_key=OVK["Monitor Name"], sheet_key=DATA_KEYS["MONITOR_NAME"]),
+        FieldSpec("Email of the monitor engineer", override_key=OVK["Monitor Email"], sheet_key=DATA_KEYS["MONITOR_EMAIL"]),
+        FieldSpec("Name of the respondent (Participant / UNICEF / IPs)", override_key=OVK["Respondent Name"], sheet_key=DATA_KEYS["RESPONDENT_NAME"]),
+        FieldSpec("Contact Number of the Respondent", override_key=OVK["Respondent Phone"], sheet_key=None, formatter=lambda _: s(overrides.get(OVK["Respondent Phone"], format_af_phone(row.get(DATA_KEYS["RESPONDENT_PHONE"])) ))),
+        FieldSpec("Email Address of the Respondent", override_key=OVK["Respondent Email"], sheet_key=None, formatter=lambda _: s(overrides.get(OVK["Respondent Email"], normalize_email_or_na_strict(row.get(DATA_KEYS["RESPONDENT_EMAIL"])) ))),
+        FieldSpec("Estimated Project Cost", override_key=OVK["Estimated Cost"], sheet_key=None, formatter=lambda _: na(overrides.get(OVK["Estimated Cost"], estimated_cost_sheet))),
+        FieldSpec("Contracted Project Cost", override_key=OVK["Contracted Cost"], sheet_key=None, formatter=lambda _: na(overrides.get(OVK["Contracted Cost"], contracted_cost_sheet))),
+        FieldSpec("Project Status", override_key=OVK["Project Status"], sheet_key=DATA_KEYS["PROJECT_STATUS_LABEL"], formatter=lambda v: three_option_checkbox_line(v, "Ongoing", "Completed", "Suspended")),
+        FieldSpec("Reason for delay", override_key=OVK["Reason Delay"], sheet_key="B8_Reasons_for_delay", formatter=lambda v: na(v)),
+        FieldSpec("Project progress", override_key=OVK["Project Progress"], sheet_key=DATA_KEYS["PROJECT_PROGRESS_LABEL"], formatter=lambda v: three_option_checkbox_line(v, "Ahead of Schedule", "On Schedule", "Running behind")),
+        FieldSpec("Contract Start Date", override_key=OVK["Contract Start"], sheet_key=None, formatter=lambda _: na(overrides.get(OVK["Contract Start"], format_date_dd_mon_yyyy(row.get(DATA_KEYS["START_DATE"])) ))),
+        FieldSpec("Contract End Date", override_key=OVK["Contract End"], sheet_key=None, formatter=lambda _: na(overrides.get(OVK["Contract End"], format_date_dd_mon_yyyy(row.get(DATA_KEYS["END_DATE"])) ))),
+        FieldSpec("Previous Physical Progress (%)", override_key=OVK["Prev Prog"], sheet_key=DATA_KEYS["PREV_PROGRESS"], formatter=lambda v: na(v)),
+        FieldSpec("Current Physical Progress (%)", override_key=OVK["Curr Prog"], sheet_key=DATA_KEYS["CURR_PROGRESS"], formatter=lambda v: na(v)),
+        FieldSpec("CDC Code", override_key=OVK["CDC"], sheet_key="A23_CDC_code"),
+        FieldSpec("Donor Name", override_key=OVK["Donor"], sheet_key=DATA_KEYS["DONOR_NAME"], formatter=lambda v: donor_upper_and_pipe(v)),
+        FieldSpec("Monitoring Report Number", override_key=OVK["Report No"], sheet_key=DATA_KEYS["MONITORING_REPORT_NO"]),
+        FieldSpec("Date of Current Report", override_key=OVK["Current Report Date"], sheet_key=None, formatter=lambda _: s(overrides.get(OVK["Current Report Date"], format_date_dd_mon_yyyy(row.get(DATA_KEYS["CURRENT_REPORT_DATE"])) ))),
+        FieldSpec("Date of Last Monitoring Report", override_key=OVK["Last Report Date"], sheet_key=None, formatter=lambda _: na(overrides.get(OVK["Last Report Date"], format_date_dd_mon_yyyy(row.get(DATA_KEYS["PREV_REPORT_DATE"])) ))),
+        FieldSpec("Number of Sites Visited", override_key=OVK["Sites"], sheet_key=DATA_KEYS["VISIT_NO"]),
+    ]
 
-    progress_val = overrides.get("Project progress", row.get(DATA_KEYS["PROJECT_PROGRESS_LABEL"]))
-    project_progress = three_option_checkbox_line(progress_val, "Ahead of Schedule", "On Schedule", "Running behind")
+    # respondent sex special (checkbox rendering)
+    if respondent_sex_val is None:
+        respondent_sex_val = overrides.get(OVK["Respondent Sex"], row.get(DATA_KEYS["RESPONDENT_SEX"]))
 
-    contract_start = s(overrides.get("Contract Start Date", format_date_dd_mon_yyyy(row.get(DATA_KEYS["START_DATE"]))))
-    contract_end = s(overrides.get("Contract End Date", format_date_dd_mon_yyyy(row.get(DATA_KEYS["END_DATE"]))))
-
-    prev_phys = s(overrides.get("Previous Physical Progress (%)", row.get(DATA_KEYS["PREV_PROGRESS"])))
-    curr_phys = s(overrides.get("Current Physical Progress (%)", row.get(DATA_KEYS["CURR_PROGRESS"])))
-
-    cdc_code = s(overrides.get("CDC Code", row.get("A23_CDC_code", "")))
-    donor_name = donor_upper_and_pipe(overrides.get("Donor Name", row.get(DATA_KEYS["DONOR_NAME"])))
-
-    monitoring_report_no = s(overrides.get("Monitoring Report Number", row.get(DATA_KEYS["MONITORING_REPORT_NO"])))
-    current_report_date = s(overrides.get("Date of Current Report", format_date_dd_mon_yyyy(row.get(DATA_KEYS["CURRENT_REPORT_DATE"]))))
-
-    last_report_date = s(overrides.get("Date of Last Monitoring Report", format_date_dd_mon_yyyy(row.get(DATA_KEYS["PREV_REPORT_DATE"]))))
-    sites_visited = s(overrides.get("Number of Sites Visited", row.get(DATA_KEYS["VISIT_NO"])))
-
-    community_agreement = overrides.get(
-        "community agreement - Is the community/user group agreed on the well site?",
-        row.get(DATA_KEYS["COMMUNITY_AGREEMENT"]) or row.get("Community_agreement"),
-    )
-    work_safety = overrides.get("Is work_safety_considered -", row.get(DATA_KEYS["WORK_SAFETY"]))
-    env_risk = overrides.get("environmental risk -", row.get(DATA_KEYS["ENV_RISK"]))
-
+    # ---- Table ----
     table = doc.add_table(rows=1, cols=2)
     table.autofit = False
     table.alignment = WD_TABLE_ALIGNMENT.LEFT
@@ -677,18 +642,12 @@ def add_general_project_information(
 
     field_in = min(float(FIELD_COL_WIDTH_IN), max(1.0, usable_w_in - 1.0))
     detail_in = max(0.75, usable_w_in - field_in)
+    set_table_columns_exact(table, [field_in, detail_in])
 
     field_w = Inches(field_in)
     detail_w = Inches(detail_in)
 
-    set_table_columns_exact(table, [field_in, detail_in])
-    table.columns[0].width = field_w
-    table.columns[1].width = detail_w
-
     hdr = table.rows[0]
-    set_row_cant_split(hdr, cant_split=True)
-    set_repeat_table_header(hdr)
-
     for i, txt in enumerate(("Field", "Details")):
         cell = hdr.cells[i]
         cell.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
@@ -696,13 +655,8 @@ def add_general_project_information(
         set_cell_margins(cell, M_TOP, M_BOTTOM, M_LEFT, M_RIGHT)
         write_cell_text(cell, txt, font=BODY_FONT, size=BODY_SIZE, bold=True, align=WD_ALIGN_PARAGRAPH.LEFT)
 
-    def _lock_widths_again() -> None:
-        set_table_columns_exact(table, [field_in, detail_in])
-
-    def add_row(field: str, value: Any) -> None:
+    def add_row(field_label: str, value_text: str) -> None:
         r = table.add_row()
-        set_row_cant_split(r, cant_split=False)
-
         c0, c1 = r.cells[0], r.cells[1]
         c0.width = field_w
         c1.width = detail_w
@@ -710,18 +664,16 @@ def add_general_project_information(
         c0.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         shade_cell(c0, FIELD_FILL_HEX)
         set_cell_margins(c0, M_TOP, M_BOTTOM, M_LEFT, M_RIGHT)
-        write_cell_text(c0, field, font=BODY_FONT, size=BODY_SIZE, bold=True, align=WD_ALIGN_PARAGRAPH.LEFT)
+        write_cell_text(c0, field_label, font=BODY_FONT, size=BODY_SIZE, bold=True)
 
         c1.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_margins(c1, M_TOP, M_BOTTOM, M_LEFT, M_RIGHT)
-        write_cell_text(c1, s(value), font=BODY_FONT, size=BODY_SIZE, bold=False, align=WD_ALIGN_PARAGRAPH.LEFT)
+        write_cell_text(c1, value_text, font=BODY_FONT, size=BODY_SIZE, bold=False)
 
-        _lock_widths_again()
+        set_table_columns_exact(table, [field_in, detail_in])  # keep layout stable
 
-    def add_row_custom(field: str, renderer) -> None:
+    def add_row_custom(field_label: str, renderer) -> None:
         r = table.add_row()
-        set_row_cant_split(r, cant_split=False)
-
         c0, c1 = r.cells[0], r.cells[1]
         c0.width = field_w
         c1.width = detail_w
@@ -729,63 +681,49 @@ def add_general_project_information(
         c0.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         shade_cell(c0, FIELD_FILL_HEX)
         set_cell_margins(c0, M_TOP, M_BOTTOM, M_LEFT, M_RIGHT)
-        write_cell_text(c0, field, font=BODY_FONT, size=BODY_SIZE, bold=True, align=WD_ALIGN_PARAGRAPH.LEFT)
+        write_cell_text(c0, field_label, font=BODY_FONT, size=BODY_SIZE, bold=True)
 
         c1.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
         set_cell_margins(c1, M_TOP, M_BOTTOM, M_LEFT, M_RIGHT)
         c1.text = ""
         renderer(c1)
 
-        _lock_widths_again()
+        set_table_columns_exact(table, [field_in, detail_in])
 
-    add_row("Province", province)
-    add_row("District", district)
-    add_row("Village / Community", village)
-    add_row("GPS points", f"{gps_lat}, {gps_lon}".strip().strip(","))
-    add_row("Project Name", project_name)
-    add_row("Date of Visit", visit_date)
-    add_row("Name of the IP, Organization / NGO", ip_name)
-    add_row("Name of the monitor Engineer", monitor_name)
-    add_row("Email of the monitor engineer", monitor_email)
-    add_row("Name of the respondent (Participant / UNICEF / IPs)", respondent_name)
+    # write normal rows from specs
+    for spec in specs:
+        if spec.formatter is not None:
+            v = spec.formatter(_pick(overrides, row, override_key=spec.override_key, sheet_key=spec.sheet_key))
+        else:
+            v = s(_pick(overrides, row, override_key=spec.override_key, sheet_key=spec.sheet_key))
+        add_row(spec.label, s(v))
 
-    if respondent_sex_val is None:
-        respondent_sex_val = overrides.get("Sex of Respondent", row.get(DATA_KEYS["RESPONDENT_SEX"]))
-
+    # Sex checkbox row
     add_row_custom(
         "Sex of Respondent",
         lambda cell: write_two_option_checkboxes(cell, respondent_sex_val, "Male", "Female", font_size=BODY_SIZE),
     )
 
-    add_row("Contact Number of the Respondent", respondent_phone)
-    add_row("Email Address of the Respondent", respondent_email)
-    add_row("Estimated Project Cost", na_if_empty(estimated_cost))
-    add_row("Contracted Project Cost", na_if_empty(contracted_cost))
-    add_row("Project Status", project_status)
-    add_row("Reason for delay", reason_delay)
-    add_row("Project progress", project_progress)
-    add_row("Contract Start Date", na_if_empty(contract_start))
-    add_row("Contract End Date", na_if_empty(contract_end))
-    add_row("Previous Physical Progress (%)", na_if_empty(prev_phys))
-    add_row("Current Physical Progress (%)", na_if_empty(curr_phys))
-    add_row("CDC Code", cdc_code)
-    add_row("Donor Name", donor_name)
-    add_row("Monitoring Report Number", monitoring_report_no)
-    add_row("Date of Current Report", current_report_date)
-    add_row("Date of Last Monitoring Report", na_if_empty(last_report_date))
-    add_row("Number of Sites Visited", sites_visited)
+    # Available documents
+    add_row_custom("Available documents in the site", lambda cell: add_available_documents_inner_table(cell, row=row, overrides=overrides))
 
-    add_row_custom("Available documents in the site", lambda cell: add_available_documents_inner_table(cell, row, DATA_KEYS))
+    # Yes/No checkbox rows
+    community_val = overrides.get(
+        "Community agreement (Is the community/user group agreed on the well site?)",
+        community_sheet,
+    )
+    work_val = overrides.get("Work safety considered", work_sheet)
+    env_val = overrides.get("Environmental risk", env_sheet)
 
     add_row_custom(
-        "community agreement - Is the community/user group agreed on the well site?",
-        lambda cell: write_yes_no_checkboxes(cell, community_agreement, font_size=BODY_SIZE, align=WD_ALIGN_PARAGRAPH.LEFT),
+        "Community agreement (Is the community/user group agreed on the well site?)",
+        lambda cell: write_yes_no_checkboxes(cell, community_val, font_size=BODY_SIZE),
     )
     add_row_custom(
-        "Is work_safety_considered -",
-        lambda cell: write_yes_no_checkboxes(cell, work_safety, font_size=BODY_SIZE, align=WD_ALIGN_PARAGRAPH.LEFT),
+        "Work safety considered",
+        lambda cell: write_yes_no_checkboxes(cell, work_val, font_size=BODY_SIZE),
     )
     add_row_custom(
-        "environmental risk -",
-        lambda cell: write_yes_no_checkboxes(cell, env_risk, font_size=BODY_SIZE, align=WD_ALIGN_PARAGRAPH.LEFT),
+        "Environmental risk",
+        lambda cell: write_yes_no_checkboxes(cell, env_val, font_size=BODY_SIZE),
     )
