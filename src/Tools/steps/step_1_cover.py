@@ -6,7 +6,7 @@ import re
 import time
 from datetime import datetime
 from io import BytesIO
-from typing import Any, Dict, List, Optional, Tuple, Callable
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import streamlit as st
 from PIL import Image, ImageOps
@@ -23,47 +23,37 @@ SS_COVER_URL = "tool6_cover_url"
 SS_PHOTO_BYTES = "photo_bytes"          # shared cache: {url: bytes}
 SS_PHOTO_THUMBS = "photo_thumbs"        # shared thumbs cache: {url: jpg_bytes}
 
-# Cover-local UI state
 SS_COVER_PICK_LOCKED = "tool6_cover_pick_locked"
 SS_COVER_PICK_SEARCH = "tool6_cover_pick_search"
 SS_COVER_PICK_PAGE = "tool6_cover_pick_page"
-SS_COVER_THUMBS = "tool6_cover_thumbs"      # local thumbs cache
+SS_COVER_THUMBS = "tool6_cover_thumbs"
 SS_COVER_UPLOAD_BYTES = "cover_upload_bytes"
 
 SS_COVER_OVERRIDES = "cover_table_overrides"
 SS_COVER_DATE_FMT = "cover_date_format"
 
-# Image fetch cache (TTL)
 SS_IMG_CACHE = "tool6_cover_img_cache"      # {url: {"ts": float, "ok": bool, "bytes": b, "msg": str}}
 SS_IMG_CACHE_CFG = "tool6_cover_img_cache_cfg"
+
 
 # Widget keys
 W_DATE_FMT_LABEL = "t6_date_fmt_label"
 W_EDIT_TOGGLE = "t6_cover_edit_toggle"
 W_SEARCH = "t6_cover_search"
-W_PAGE = "t6_cover_page"
 W_UPLOAD = "t6_cover_upload"
 
 
 # =============================================================================
 # UI constants
 # =============================================================================
-GRID_COLS = 2               # ✅ ثابت: دو ستون کنار هم
-PER_PAGE = 12               # ✅ برای سرعت در Cloud پایین نگه دارید
-THUMB_BOX = 200             # ✅ کمی کوچک‌تر از قبل (220) برای نمایش خردتر
+GRID_COLS = 2
+PER_PAGE = 12
+THUMB_BOX = 240
 
-# Hover HD tuning (performance)
-HOVER_HD_MAXPX = 1600       # کمی کمتر => سریع‌تر
-HOVER_HD_QUALITY = 85
-
-# Cache / limits
 IMG_TTL_OK = 20 * 60
 IMG_TTL_FAIL = 90
 IMG_CACHE_MAX_ITEMS = 600
 IMG_MAX_MB = 25
-
-# Adaptive HD budget (per visible page) - برای سرعت Cloud بهتره کم باشه
-HD_BUDGET = 24
 
 
 # =============================================================================
@@ -149,89 +139,95 @@ def _only_images(urls: List[str], labels: Dict[str, str]) -> List[str]:
 
 
 # =============================================================================
-# CSS (2-column + square cards + hover HD)
+# CSS: Sticky controls for Available Images
 # =============================================================================
 def _inject_css() -> None:
     st.markdown(
-        f"""
+        """
 <style>
-  [data-testid="stVerticalBlock"] {{ gap: 0.65rem; }}
+  /* Sticky bar for Available Images controls */
+  .t6-sticky {
+    position: sticky;
+    top: 0;
+    z-index: 999;
+    background: rgba(14, 17, 23, 0.96);
+    backdrop-filter: blur(6px);
+    border: 1px solid rgba(255,255,255,0.10);
+    border-radius: 12px;
+    padding: 10px 10px 8px 10px;
+    margin-bottom: 10px;
+  }
 
-  .t6-card {{
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 14px;
-    overflow: hidden;
-    background: rgba(255,255,255,0.02);
-  }}
+  /* Tighten vertical spacing */
+  [data-testid="stVerticalBlock"] { gap: 0.55rem; }
 
-  /* ✅ مربع واقعی */
-  .t6-imgbox {{
+  /* Hover/Touch zoom HD container */
+  .t6-zoombox {
+    position: relative;
     width: 100%;
     aspect-ratio: 1 / 1;
-    background: rgba(0,0,0,0.08);
-    display: grid;
-    place-items: center;
-    position: relative;
     overflow: hidden;
-  }}
+    border-radius: 12px;
+    background: rgba(0,0,0,0.10);
+  }
 
-  .t6-imgbox img.t6-thumb {{
+  .t6-zoombox img.t6-thumb {
     width: 100%;
     height: 100%;
     object-fit: contain;
     display:block;
-    transition: transform 160ms ease, opacity 120ms ease;
     transform: scale(1.0);
+    transition: transform 160ms ease, opacity 140ms ease;
     opacity: 1;
-  }}
+  }
 
-  .t6-imgbox img.t6-hd {{
-    position:absolute;
-    inset:0;
+  .t6-zoombox img.t6-hd {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: contain;
-    opacity:0;
-    transform: scale(1.04);
-    transition: opacity 120ms ease, transform 160ms ease;
-    will-change: transform, opacity;
-  }}
+    display:block;
+    opacity: 0;
+    transform: scale(1.05);
+    transition: opacity 140ms ease, transform 160ms ease;
+    pointer-events: none;
+  }
 
-  .t6-card:hover .t6-imgbox img.t6-thumb {{
+  /* Desktop hover */
+  .t6-zoombox:hover img.t6-thumb {
     transform: scale(1.08);
-    opacity: 0.08;
-  }}
-
-  .t6-card:hover .t6-imgbox img.t6-hd {{
+    opacity: 0.12;
+  }
+  .t6-zoombox:hover img.t6-hd {
     opacity: 1;
-    transform: scale(1.14);
-  }}
+    transform: scale(1.12);
+  }
 
-  .t6-cap {{
-    padding: 6px 10px 8px 10px;
-    font-size: 11px;
-    opacity: .86;
-    line-height: 1.25;
-    min-height: 34px;    /* ✅ هم‌تراز شدن کپشن‌ها */
-    word-break: break-word;
-    text-align: right;
-  }}
+  /* Touch: while pressing */
+  .t6-zoombox:active img.t6-thumb {
+    transform: scale(1.08);
+    opacity: 0.12;
+  }
+  .t6-zoombox:active img.t6-hd {
+    opacity: 1;
+    transform: scale(1.12);
+  }
 
-  .t6-btn-wrap {{
-    margin-top: 8px;
-  }}
-
-  .t6-box {{
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 14px;
-    padding: 14px;
-    background: rgba(255,255,255,0.02);
-    margin: 0.25rem 0 0.75rem 0;
-  }}
+  /* Touch: when any inner element gets focus */
+  .t6-zoombox:focus-within img.t6-thumb {
+    transform: scale(1.08);
+    opacity: 0.12;
+  }
+  .t6-zoombox:focus-within img.t6-hd {
+    opacity: 1;
+    transform: scale(1.12);
+  }
 </style>
 """,
         unsafe_allow_html=True,
     )
+
 
 
 # =============================================================================
@@ -257,7 +253,11 @@ def _to_clean_png_bytes(raw: bytes, *, max_px: int = 2600) -> bytes:
 
 def _make_thumb_contain(img_bytes: bytes, *, box: int = THUMB_BOX, quality: int = 82) -> Optional[bytes]:
     """
-    thumb سبک و سریع: مربع contain + پس‌زمینه ثابت
+    Thumbnail سریع و کوچک:
+      - contain داخل مربع
+      - خروجی JPEG
+    اگر Pillow نتواند decode کند (مثلاً WEBP روی Cloud)، None برمی‌گردد
+    و UI مستقیماً URL را با st.image(url) نشان می‌دهد.
     """
     try:
         img = Image.open(BytesIO(img_bytes))
@@ -273,6 +273,9 @@ def _make_thumb_contain(img_bytes: bytes, *, box: int = THUMB_BOX, quality: int 
         return out.getvalue()
     except Exception:
         return None
+
+HOVER_HD_MAXPX = 1600
+HOVER_HD_QUALITY = 85
 
 
 def _make_hover_hd(img_bytes: bytes, *, max_px: int = HOVER_HD_MAXPX, quality: int = HOVER_HD_QUALITY) -> Optional[bytes]:
@@ -296,29 +299,27 @@ def _b64_bytes(data: bytes) -> str:
     return base64.b64encode(data).decode("utf-8")
 
 
-def _card_html_with_hover(thumb_bytes: Optional[bytes], hd_bytes: Optional[bytes], caption: str) -> str:
-    cap = _s(caption)
+def _zoom_html(thumb_bytes: Optional[bytes], hd_bytes: Optional[bytes]) -> str:
+    """
+    thumb_bytes: JPEG کوچک
+    hd_bytes: JPEG بزرگتر برای hover/touch
+    """
     if not thumb_bytes:
-        return f"<div class='t6-card'><div class='t6-imgbox'></div><div class='t6-cap'>{cap}</div></div>"
+        # اگر thumb نداریم (مثلاً WEBP decode نشد) این تابع را صدا نزنید
+        return ""
 
     b64t = _b64_bytes(thumb_bytes)
-    thumb_tag = f"<img class='t6-thumb' loading='lazy' src='data:image/jpeg;base64,{b64t}'/>"
+    t = f"<img class='t6-thumb' loading='lazy' src='data:image/jpeg;base64,{b64t}'/>"
 
-    hd_tag = ""
+    h = ""
     if hd_bytes:
         b64h = _b64_bytes(hd_bytes)
-        hd_tag = f"<img class='t6-hd' loading='lazy' src='data:image/jpeg;base64,{b64h}'/>"
+        h = f"<img class='t6-hd' loading='lazy' src='data:image/jpeg;base64,{b64h}'/>"
 
-    return (
-        "<div class='t6-card'>"
-        f"  <div class='t6-imgbox'>{thumb_tag}{hd_tag}</div>"
-        f"  <div class='t6-cap'>{cap}</div>"
-        "</div>"
-    )
-
+    return f"<div class='t6-zoombox' tabindex='0'>{t}{h}</div>"
 
 # =============================================================================
-# TTL fetch cache wrapper (critical for Streamlit Cloud speed)
+# TTL fetch cache wrapper
 # =============================================================================
 def _fetch_image_cached(
     url: str,
@@ -360,12 +361,17 @@ def _fetch_image_cached(
         for k, _ in items[:drop_n]:
             cache.pop(k, None)
 
-    ok, b, msg = fetch_image(url)
+    try:
+        ok, b, msg = fetch_image(url)
+    except Exception as e:
+        ok, b, msg = False, None, f"Fetch exception: {type(e).__name__}: {e}"
+
     if ok and b:
         if len(b) > max_mb * 1024 * 1024:
             cache[url] = {"ts": now, "ok": False, "bytes": None, "msg": f"Image too large (> {max_mb}MB)"}
             ss[SS_IMG_CACHE] = cache
             return False, None, f"Image too large (> {max_mb}MB)"
+
         cache[url] = {"ts": now, "ok": True, "bytes": b, "msg": "OK"}
         ss[SS_IMG_CACHE] = cache
         return True, b, "OK"
@@ -420,6 +426,8 @@ def cache_thumbnail_only(
         if not (ok and b):
             return
         src = b
+        pb[url] = b
+        ss[SS_PHOTO_BYTES] = pb
 
     th = _make_thumb_contain(src, box=THUMB_BOX, quality=82)
     if th:
@@ -427,33 +435,7 @@ def cache_thumbnail_only(
         thumbs_global[url] = th
         ss[SS_COVER_THUMBS] = thumbs_local
         ss[SS_PHOTO_THUMBS] = thumbs_global
-
-
-def _thumb_and_optional_hd(
-    url: str,
-    *,
-    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
-    want_hd: bool,
-) -> Tuple[Optional[bytes], Optional[bytes]]:
-    ss = st.session_state
-    tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(url) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(url)
-
-    if not tb:
-        cache_thumbnail_only(url, fetch_image=fetch_image)
-        tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(url) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(url)
-
-    hd = None
-    if want_hd:
-        pb: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
-        src = pb.get(url)
-        if not src:
-            ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
-            if ok and b:
-                src = b
-        if src:
-            hd = _make_hover_hd(src)
-
-    return tb, hd
+    # اگر th=None شد، عمداً چیزی cache نمی‌کنیم تا UI fallback به URL انجام شود
 
 
 # =============================================================================
@@ -547,7 +529,7 @@ def resolve_cover_bytes() -> Optional[bytes]:
 
 
 # =============================================================================
-# HARD hide/cleanup: keep only cover
+# HARD cleanup: keep only selected cover in caches (for memory/speed)
 # =============================================================================
 def _keep_only_cover(*, cover_url: str, cover_bytes: Optional[bytes]) -> None:
     ss = st.session_state
@@ -558,6 +540,7 @@ def _keep_only_cover(*, cover_url: str, cover_bytes: Optional[bytes]) -> None:
         ss[SS_COVER_BYTES] = bytes(cover_bytes)
         ss["cover_bytes"] = bytes(cover_bytes)
 
+    # Keep only cover-related caches (optional but good for Cloud)
     tl = ss.get(SS_COVER_THUMBS) or {}
     ss[SS_COVER_THUMBS] = {cover_url: tl[cover_url]} if isinstance(tl, dict) and cover_url in tl else {}
 
@@ -616,7 +599,7 @@ def _ensure_state(ctx: Tool6Context) -> None:
 
 
 # =============================================================================
-# Instant cover-table save (no form submit)
+# Instant cover-table save
 # =============================================================================
 def _set_cover_field(field: str, widget_key: str) -> None:
     ss = st.session_state
@@ -653,7 +636,7 @@ def _on_date_fmt_change(ctx: Tool6Context) -> None:
 
 
 # =============================================================================
-# Picker (FAST + EXACT 2-up layout like your screenshot)
+# Picker (MINIMAL + STICKY controls)
 # =============================================================================
 def _render_picker(
     *,
@@ -668,35 +651,29 @@ def _render_picker(
     def lab(u: str) -> str:
         return _s(labels.get(u, u))
 
-    # Locked => show ONLY cover
+    # Locked => show only selected cover
     if locked and (cover_url or resolve_cover_bytes()):
-        st.markdown("<div class='t6-box'>", unsafe_allow_html=True)
-        st.markdown("**Selected Cover (only this image is kept)**")
+        st.markdown("### Selected Cover")
 
         if not cover_url and resolve_cover_bytes():
             st.image(resolve_cover_bytes(), use_container_width=True)
         else:
-            cache_thumbnail_only(cover_url, fetch_image=fetch_image)
-            tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(cover_url) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(cover_url)
-            if tb:
-                ensure_full_image_bytes(cover_url, fetch_image=fetch_image)
-                src = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(cover_url)
-                hd = _make_hover_hd(src) if src else None
-                st.markdown(_card_html_with_hover(tb, hd, lab(cover_url)), unsafe_allow_html=True)
-            else:
-                st.write(lab(cover_url))
+            # Try bytes first; fallback to URL rendering if bytes not available
+            ensure_full_image_bytes(cover_url, fetch_image=fetch_image)
+            src = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(cover_url)
 
-        c1, c2 = st.columns([1, 1], gap="small")
+            if isinstance(src, (bytes, bytearray)) and src:
+                st.image(bytes(src), use_container_width=True, caption=lab(cover_url))
+            else:
+                st.image(cover_url, use_container_width=True, caption=lab(cover_url))
+
+        c1, c2 = st.columns(2, gap="small")
         with c1:
             if st.button("Change cover", use_container_width=True, key=_key("chg_cover")):
                 ss[SS_COVER_PICK_LOCKED] = False
                 ss[SS_COVER_URL] = ""
                 ss[SS_COVER_BYTES] = None
                 ss[SS_COVER_UPLOAD_BYTES] = None
-                ss[SS_COVER_THUMBS] = {}
-                ss[SS_PHOTO_THUMBS] = {}
-                ss[SS_PHOTO_BYTES] = {}
-                ss[SS_IMG_CACHE] = {}
                 st.rerun()
         with c2:
             if st.button("Clear cover", use_container_width=True, key=_key("clr_cover")):
@@ -704,16 +681,12 @@ def _render_picker(
                 ss[SS_COVER_URL] = ""
                 ss[SS_COVER_BYTES] = None
                 ss[SS_COVER_UPLOAD_BYTES] = None
-                ss[SS_COVER_THUMBS] = {}
-                ss[SS_PHOTO_THUMBS] = {}
-                ss[SS_PHOTO_BYTES] = {}
-                ss[SS_IMG_CACHE] = {}
                 st.rerun()
-
-        st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Not locked => show gallery
+    # ---- Sticky controls (Search + Prev/Next) ----
+    st.markdown("<div class='t6-sticky'>", unsafe_allow_html=True)
+
     q = st.text_input(
         "Search photos",
         value=_s(ss.get(SS_COVER_PICK_SEARCH, "")),
@@ -724,68 +697,78 @@ def _render_picker(
     ss[SS_COVER_PICK_SEARCH] = q
 
     filtered = [u for u in urls if (q in lab(u).lower())] if q else list(urls)
+    total = len(filtered)
+    pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+
+    # clamp page
+    page = int(ss.get(SS_COVER_PICK_PAGE, 1) or 1)
+    if page < 1:
+        page = 1
+    if page > pages:
+        page = pages
+    ss[SS_COVER_PICK_PAGE] = page
+
+    b1, b2, b3 = st.columns([0.25, 0.50, 0.25], gap="small")
+    with b1:
+        if st.button("◀ Prev", use_container_width=True, disabled=(page <= 1), key=_key("prev_page")):
+            ss[SS_COVER_PICK_PAGE] = max(1, page - 1)
+            st.rerun()
+    with b2:
+        st.markdown(f"<div style='text-align:center; padding-top:6px;'>Page <b>{page}</b> / {pages} — {total} photos</div>", unsafe_allow_html=True)
+    with b3:
+        if st.button("Next ▶", use_container_width=True, disabled=(page >= pages), key=_key("next_page")):
+            ss[SS_COVER_PICK_PAGE] = min(pages, page + 1)
+            st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+    # ---- end sticky controls ----
+
     if not filtered:
         st.info("No photos match your search.")
         return
 
-    total = len(filtered)
-    pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
-
-    p1, p2, p3 = st.columns([0.40, 0.30, 0.30], gap="small")
-    with p1:
-        page = st.number_input(
-            "Page",
-            min_value=1,
-            max_value=pages,
-            value=int(ss.get(SS_COVER_PICK_PAGE, 1) or 1),
-            step=1,
-            label_visibility="collapsed",
-            key=W_PAGE,
-        )
-        ss[SS_COVER_PICK_PAGE] = int(page)
-    with p2:
-        st.caption(f"{total} photos")
-    with p3:
-        if st.button("Clear search", use_container_width=True, key=_key("clear_search")):
-            ss[SS_COVER_PICK_SEARCH] = ""
-            ss[SS_COVER_PICK_PAGE] = 1
-            st.rerun()
-
-    start = (int(page) - 1) * PER_PAGE
+    start = (page - 1) * PER_PAGE
     chunk = filtered[start : start + PER_PAGE]
 
-    # ✅ preload thumbs only for visible page (fast)
+    # preload thumbs for visible page
     for u in chunk:
         cache_thumbnail_only(u, fetch_image=fetch_image)
 
-    # ✅ HD only for first N visible items
-    hd_set = set(chunk[: min(HD_BUDGET, len(chunk))])
-
-    # ✅ EXACT 2-up layout like screenshot: use st.columns(2)
+    # Render grid
     for i in range(0, len(chunk), GRID_COLS):
         row = chunk[i : i + GRID_COLS]
         cols = st.columns(GRID_COLS, gap="medium")
 
         for col, u in zip(cols, row):
             with col:
-                tb, hd = _thumb_and_optional_hd(u, fetch_image=fetch_image, want_hd=(u in hd_set))
-                st.markdown(_card_html_with_hover(tb, hd, lab(u)), unsafe_allow_html=True)
+                tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(u) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(u)
 
-                st.markdown("<div class='t6-btn-wrap'>", unsafe_allow_html=True)
+                # 1) If thumbnail exists => show it
+                # 2) Else => fallback to st.image(url) so user still sees image even if PIL decode failed
+                if isinstance(tb, (bytes, bytearray)) and tb:
+                    # hd را از bytes اصلی بسازیم (اگر داریم)
+                    ensure_full_image_bytes(u, fetch_image=fetch_image)
+                    src = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(u)
+                    hd = _make_hover_hd(bytes(src)) if isinstance(src, (bytes, bytearray)) and src else None
+
+                    st.markdown(_zoom_html(bytes(tb), hd), unsafe_allow_html=True)
+                    st.caption(lab(u))
+                else:
+                    # fallback (برای وقتی Pillow نتونست thumb بسازه)
+                    st.image(u, use_container_width=True, caption=lab(u))
+
                 if st.button("Select", use_container_width=True, key=_key("sel", u)):
                     ensure_full_image_bytes(u, fetch_image=fetch_image)
                     b = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(u)
 
                     ss[SS_COVER_UPLOAD_BYTES] = None
                     ss[SS_COVER_PICK_LOCKED] = True
-
-                    _keep_only_cover(cover_url=u, cover_bytes=b)
+                    _keep_only_cover(cover_url=u, cover_bytes=b if isinstance(b, (bytes, bytearray)) else None)
                     st.rerun()
-                st.markdown("</div>", unsafe_allow_html=True)
 
 
 # =============================================================================
-# Panels (fragmented so form edits don't rerender heavy gallery)
+# Panels (fragmented: avoid rerunning gallery when editing fields)
 # =============================================================================
 @st.fragment
 def _images_panel(ctx: Tool6Context, fetch_image) -> None:
@@ -796,8 +779,9 @@ def _images_panel(ctx: Tool6Context, fetch_image) -> None:
 
     if not imgs and not resolve_cover_bytes():
         st.warning("No suitable images found for this report.")
-    else:
-        _render_picker(urls=imgs, labels=labels, fetch_image=fetch_image)
+        return
+
+    _render_picker(urls=imgs, labels=labels, fetch_image=fetch_image)
 
 
 @st.fragment
@@ -823,14 +807,13 @@ def _upload_panel() -> None:
         ss[SS_COVER_URL] = ""
         ss[SS_COVER_PICK_LOCKED] = True
 
-        # keep only uploaded cover
+        # purge other caches
         ss[SS_COVER_THUMBS] = {}
         ss[SS_PHOTO_THUMBS] = {}
         ss[SS_PHOTO_BYTES] = {}
         ss[SS_IMG_CACHE] = {}
 
         st.image(processed, use_container_width=True, caption="Uploaded cover")
-        st.success("Custom cover uploaded and selected.")
         st.rerun()
 
 
@@ -843,13 +826,10 @@ def render_step(
     fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
 ) -> bool:
     """
-    Step 1 (FAST):
-      - ✅ 2 ستون دقیقاً مثل اسکرین‌شات
-      - ✅ کارت مربع واقعی
-      - ✅ TTL fetch cache
-      - ✅ فقط thumbهای صفحه فعلی
-      - ✅ HD محدود برای سرعت
-      - ✅ st.fragment برای جلوگیری از rerun سنگین
+    مینیمال + Cloud-safe:
+      - Sticky controls فقط برای Search/Prev/Next در Available Images
+      - حذف کارت/کانتینر/hover/HD/debug
+      - نمایش مطمئن تصویر: thumb bytes اگر شد، وگرنه URL مستقیم
     """
     _ensure_state(ctx)
     _inject_css()
@@ -863,7 +843,6 @@ def render_step(
     st.divider()
     st.subheader("Cover Page Details")
 
-    # --- Date format ---
     fmt_labels = [x for x, _ in DATE_FORMATS]
     cur_fmt = _s(st.session_state.get(SS_COVER_DATE_FMT, "%d/%b/%Y")) or "%d/%b/%Y"
     idx = next((i for i, (_, f) in enumerate(DATE_FORMATS) if f == cur_fmt), 0)
@@ -884,15 +863,12 @@ def render_step(
     _apply_date_format_from_ctx(ctx)
 
     cover_table: Dict[str, str] = st.session_state.get(SS_COVER_OVERRIDES, {}) or {}
-
     edit = st.toggle("Edit cover details", value=bool(st.session_state.get(W_EDIT_TOGGLE, False)), key=W_EDIT_TOGGLE)
 
     if not edit:
-        st.markdown("<div class='t6-box'>", unsafe_allow_html=True)
         for label, field in COVER_FIELDS:
             val = _s(cover_table.get(field))
             st.markdown(f"**{label}** {val or '—'}")
-        st.markdown("</div>", unsafe_allow_html=True)
     else:
         a, b = st.columns(2, gap="large")
 
@@ -928,7 +904,5 @@ def render_step(
             inp_area("Implementing Partner (IP)", _s(cover_table.get("Implementing Partner (IP)")), 80)
             inp_text("Prepared by", _s(cover_table.get("Prepared by")) or DEFAULT_PREPARED_BY)
             inp_text("Prepared for", _s(cover_table.get("Prepared for")) or DEFAULT_PREPARED_FOR)
-
-        st.caption("✅ Changes are saved instantly (no Save button needed).")
 
     return bool(resolve_cover_bytes())
