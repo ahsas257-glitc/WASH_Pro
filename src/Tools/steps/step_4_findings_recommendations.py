@@ -6,7 +6,6 @@ import hashlib
 import io
 import re
 import time
-from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple, Callable
 from urllib.request import urlopen, Request
 
@@ -23,6 +22,7 @@ from design.components.base_tool_ui import card_open, card_close, status_card
 # =============================================================================
 try:
     from streamlit_drawable_canvas import st_canvas  # type: ignore
+
     _HAS_CANVAS = True
 except Exception:
     st_canvas = None
@@ -58,30 +58,25 @@ SS_OBS = "tool6_obs_components"                  # from Step 3
 SS_FIND = "tool6_findings_components"            # Step 4 UI storage
 SS_FINAL = "tool6_component_observations_final"  # merged output for DOCX
 SS_LOCK = "tool6_report_locked"                  # lock flag (global)
+SS_FINAL_LOCKED = "tool6_s4_final_locked"
 
 SS_PHOTO_BYTES = "photo_bytes"                   # full bytes (DOCX + preview) — only selected
 SS_PHOTO_THUMBS = "photo_thumbs"                 # thumb bytes cache (fast UI)
 
-# Per-finding selection lock (Select => lock + hide others)
 SS_ROW_PICK_LOCK = "tool6_s4_row_pick_locked"    # dict: {scope_key: bool}
-
-# Per-finding pagination/search UI
 SS_ROW_PICK_PAGE = "tool6_s4_row_pick_page"      # dict: {scope_key: int}
 SS_ROW_PICK_SEARCH = "tool6_s4_row_pick_search"  # dict: {scope_key: str}
 
-# TTL cache layer for fetch_image
 SS_IMG_CACHE = "tool6_s4_img_cache"              # {url: {"ts": float, "ok": bool, "bytes": b, "msg": str}}
 SS_IMG_CACHE_CFG = "tool6_s4_img_cache_cfg"
 
-# Audio cache
 SS_AUDIO_BYTES = "tool6_s4_audio_bytes"          # {url: {"ts": float, "ok": bool, "bytes": b, "mime": str}}
 
 # Edited/Annotated image bytes (printed in report)
-# Because you forbid reusing the same photo across findings, mapping by URL is safe.
-SS_PHOTO_ANNOTATED = "tool6_s4_photo_annotated"  # {url: png_or_jpg_bytes}
+SS_PHOTO_ANNOTATED = "tool6_s4_photo_annotated"  # {url: png_bytes}
 
-# Final lock for Step 4
-SS_FINAL_LOCKED = "tool6_s4_final_locked"
+# Autosave throttling per image
+SS_ANN_META = "tool6_s4_ann_meta"                # {url: {"hash": str, "ts": float}}
 
 
 # =============================================================================
@@ -93,20 +88,20 @@ AUDIO_TPM_COL = "TPM ID"
 
 
 # =============================================================================
-# Enterprise-level performance constants
+# Performance constants
 # =============================================================================
-GRID_COLS = 2              # ✅ 2 columns as requested
-THUMB_BOX = 200            # ✅ slightly smaller thumbnails
-PER_PAGE = 12              # ✅ pagination (per finding picker)
+GRID_COLS = 2
+THUMB_BOX = 200
+PER_PAGE = 12
 
-# Hover HD
-HOVER_HD_MAXPX = 1920      # ✅ Full-HD-ish hover
+# Hover HD (cards)
+HOVER_HD_MAXPX = 1920
 HOVER_HD_QUALITY = 88
-HOVER_HD_BUDGET = 18       # ✅ only first N visible cards get HD hover layer
+HOVER_HD_BUDGET = 18
 
-# TTL cache (critical for Streamlit Cloud)
-IMG_TTL_OK = 20 * 60       # 20 min
-IMG_TTL_FAIL = 90          # 90 sec
+# TTL cache
+IMG_TTL_OK = 20 * 60
+IMG_TTL_FAIL = 90
 IMG_CACHE_MAX_ITEMS = 700
 IMG_MAX_MB = 25
 
@@ -114,12 +109,18 @@ AUDIO_TTL_OK = 20 * 60
 AUDIO_TTL_FAIL = 90
 AUDIO_MAX_MB = 40
 
-# Editor output
-ANNOT_MAXPX = 2600         # keep printable but not huge
+# Editor output (printable, not huge)
+ANNOT_MAXPX = 2600
+
+# Editor UI rendering width (keeps UI fast but still HD preview separately)
+EDITOR_CANVAS_MAX_W = 1100
+
+# Autosave throttle (seconds)
+ANN_AUTOSAVE_MIN_INTERVAL = 0.35
 
 
 # =============================================================================
-# Keys
+# Key helper
 # =============================================================================
 def _key(*parts: Any) -> str:
     raw = ".".join(str(p) for p in parts)
@@ -128,22 +129,22 @@ def _key(*parts: Any) -> str:
 
 
 # =============================================================================
-# CSS (Step3-feel + square + 2-col + hover HD)
+# CSS (fixed look across reruns)
 # =============================================================================
 def _inject_css() -> None:
     st.markdown(
-        f"""
+        """
 <style>
-  [data-testid="stVerticalBlock"] {{ gap: 0.70rem; }}
+  [data-testid="stVerticalBlock"] { gap: 0.70rem; }
 
-  .t6-card {{
+  .t6-card {
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 12px;
     overflow: hidden;
     background: rgba(255,255,255,0.02);
-  }}
+  }
 
-  .t6-imgbox {{
+  .t6-imgbox {
     width: 100%;
     aspect-ratio: 1 / 1;
     background: rgba(0,0,0,0.08);
@@ -151,9 +152,9 @@ def _inject_css() -> None:
     place-items: center;
     position: relative;
     overflow: hidden;
-  }}
+  }
 
-  .t6-imgbox img.t6-thumb {{
+  .t6-imgbox img.t6-thumb {
     width: 100%;
     height: 100%;
     object-fit: contain;
@@ -161,9 +162,9 @@ def _inject_css() -> None:
     transition: transform 160ms ease, opacity 120ms ease;
     transform: scale(1.0);
     opacity: 1;
-  }}
+  }
 
-  .t6-imgbox img.t6-hd {{
+  .t6-imgbox img.t6-hd {
     position:absolute;
     inset:0;
     width:100%;
@@ -174,19 +175,19 @@ def _inject_css() -> None:
     transform: scale(1.05);
     transition: opacity 120ms ease, transform 160ms ease;
     will-change: transform, opacity;
-  }}
+  }
 
-  .t6-card:hover .t6-imgbox img.t6-thumb {{
+  .t6-card:hover .t6-imgbox img.t6-thumb {
     transform: scale(1.08);
     opacity: 0.08;
-  }}
+  }
 
-  .t6-card:hover .t6-imgbox img.t6-hd {{
+  .t6-card:hover .t6-imgbox img.t6-hd {
     opacity: 1;
     transform: scale(1.14);
-  }}
+  }
 
-  .t6-cap {{
+  .t6-cap {
     padding: 8px 10px 0 10px;
     font-size: 11px;
     opacity: .86;
@@ -194,49 +195,49 @@ def _inject_css() -> None:
     text-align: right;
     min-height: 28px;
     word-break: break-word;
-  }}
+  }
 
-  .t6-actions {{
+  .t6-actions {
     display:flex;
     gap: 8px;
     padding: 10px 10px 12px 10px;
-  }}
+  }
 
-  .t6-box {{
+  .t6-box {
     border: 1px solid rgba(255,255,255,0.10);
     border-radius: 14px;
     padding: 14px;
     background: rgba(255,255,255,0.02);
     margin: 10px 0 12px 0;
-  }}
+  }
 
-  .t6-muted {{
+  .t6-muted {
     opacity: .75;
     font-size: 12px;
-  }}
+  }
 
-  .t6-editor-box {{
+  .t6-editor-box {
     border: 1px solid rgba(255,255,255,0.10);
     border-radius: 14px;
     padding: 12px;
     background: rgba(255,255,255,0.02);
     margin-top: 10px;
-  }}
+  }
 
-  .t6-sticky {{
+  .t6-sticky {
     position: sticky;
     bottom: 0;
     z-index: 50;
     padding: 10px 0 0 0;
     backdrop-filter: blur(8px);
-  }}
+  }
 
-  .t6-sticky-inner {{
+  .t6-sticky-inner {
     border: 1px solid rgba(255,255,255,0.12);
     background: rgba(15,15,18,0.60);
     border-radius: 14px;
     padding: 10px;
-  }}
+  }
 </style>
 """,
         unsafe_allow_html=True,
@@ -252,10 +253,12 @@ def _ensure_state() -> None:
     ss.setdefault(SS_FIND, [])
     ss.setdefault(SS_FINAL, [])
     ss.setdefault(SS_LOCK, False)
+    ss.setdefault(SS_FINAL_LOCKED, False)
 
     ss.setdefault(SS_PHOTO_BYTES, {})
     ss.setdefault(SS_PHOTO_THUMBS, {})
     ss.setdefault(SS_PHOTO_ANNOTATED, {})
+    ss.setdefault(SS_ANN_META, {})
 
     ss.setdefault(SS_ROW_PICK_LOCK, {})
     ss.setdefault(SS_ROW_PICK_PAGE, {})
@@ -268,7 +271,6 @@ def _ensure_state() -> None:
     )
 
     ss.setdefault(SS_AUDIO_BYTES, {})
-    ss.setdefault(SS_FINAL_LOCKED, False)
 
     if not isinstance(ss[SS_FIND], list):
         ss[SS_FIND] = []
@@ -278,6 +280,8 @@ def _ensure_state() -> None:
         ss[SS_PHOTO_THUMBS] = {}
     if not isinstance(ss[SS_PHOTO_ANNOTATED], dict):
         ss[SS_PHOTO_ANNOTATED] = {}
+    if not isinstance(ss[SS_ANN_META], dict):
+        ss[SS_ANN_META] = {}
     if not isinstance(ss[SS_ROW_PICK_LOCK], dict):
         ss[SS_ROW_PICK_LOCK] = {}
     if not isinstance(ss[SS_ROW_PICK_PAGE], dict):
@@ -291,9 +295,7 @@ def _ensure_state() -> None:
 
 
 def _is_locked() -> bool:
-    if bool(st.session_state.get(SS_FINAL_LOCKED, False)):
-        return True
-    return bool(st.session_state.get(SS_LOCK, False))
+    return bool(st.session_state.get(SS_FINAL_LOCKED, False)) or bool(st.session_state.get(SS_LOCK, False))
 
 
 # =============================================================================
@@ -317,8 +319,8 @@ def _ensure_obs_block(b: Dict[str, Any]) -> Dict[str, Any]:
 def _ensure_finding_row(r: Dict[str, Any]) -> Dict[str, Any]:
     r.setdefault("finding", "")
     r.setdefault("Compliance", "")
-    r.setdefault("photo", "")     # ✅ single only
-    r.setdefault("photos", [])    # legacy kept, but we will enforce single
+    r.setdefault("photo", "")     # single photo
+    r.setdefault("photos", [])    # legacy
     return r
 
 
@@ -359,7 +361,6 @@ def _fetch_image_cached(
         if (not ok) and age < ttl_fail:
             return False, None, _s(hit.get("msg") or "Recently failed")
 
-    # trim
     if len(cache) > max_items:
         items = sorted(cache.items(), key=lambda kv: float((kv[1] or {}).get("ts") or 0.0))
         drop_n = max(1, int(len(items) * 0.25))
@@ -388,7 +389,6 @@ def _make_thumb_contain(b: bytes, *, box: int = THUMB_BOX, quality: int = 82) ->
     try:
         img = Image.open(io.BytesIO(b))
         img = ImageOps.exif_transpose(img).convert("RGB")
-
         img = ImageEnhance.Contrast(img).enhance(0.95)
         img = ImageEnhance.Brightness(img).enhance(0.97)
         img.thumbnail((box, box), Image.Resampling.LANCZOS)
@@ -489,7 +489,7 @@ def _ensure_full_bytes_selected(
 
 
 # =============================================================================
-# Audio: utils + cached download
+# Audio: cached download
 # =============================================================================
 def _guess_audio_mime(url: str, fallback: str = "audio/aac") -> str:
     u = _s(url).lower()
@@ -557,7 +557,6 @@ def _audio_bytes_cached(
         if (not ok) and age < AUDIO_TTL_FAIL:
             return None, _s(hit.get("mime")) or _guess_audio_mime(url)
 
-    # 1) prefer fetch_audio if provided
     if fetch_audio is not None:
         try:
             ok, b, _msg, mime = fetch_audio(url)
@@ -569,7 +568,6 @@ def _audio_bytes_cached(
         except Exception:
             pass
 
-    # 2) fallback download
     ok2, b2, _msg2 = _download_bytes_urlopen(url, timeout=20, max_mb=AUDIO_MAX_MB)
     mime2 = _guess_audio_mime(url)
     cache[url] = {"ts": now, "ok": ok2, "bytes": (b2 if ok2 else None), "mime": mime2}
@@ -579,7 +577,9 @@ def _audio_bytes_cached(
 
 @st.cache_data(ttl=120, show_spinner=False)
 def _fetch_audio_sheet_rows_csv() -> List[Dict[str, str]]:
+    # lightweight CSV fetch
     import pandas as pd
+
     csv_url = f"https://docs.google.com/spreadsheets/d/{AUDIO_SHEET_ID}/export?format=csv&gid={AUDIO_GID}"
     df = pd.read_csv(csv_url, dtype=str).fillna("")
     return df.to_dict(orient="records")
@@ -611,7 +611,6 @@ def _audios_for_tpm_id(tpm_id: str) -> List[str]:
         if "audio" in kk or kk.startswith("aud"):
             out.append(vv)
 
-    # dedup preserve
     seen = set()
     dedup: List[str] = []
     for u in out:
@@ -641,7 +640,6 @@ def _audio_playlist_block(
     idx = opts.index(cur) if cur in opts else 0
 
     col1, col2 = st.columns([2.3, 1.0], gap="small")
-
     with col1:
         blk["audio_url"] = st.selectbox(
             "Audio playlist",
@@ -651,7 +649,6 @@ def _audio_playlist_block(
             key=_key("audio_sel", scope_key),
             disabled=locked,
         )
-
     with col2:
         st.caption("Preview")
         if blk["audio_url"]:
@@ -682,9 +679,7 @@ def _label(labels: Dict[str, str], url: str) -> str:
 
 
 # =============================================================================
-# Paint-like editor (best-effort):
-# - If streamlit-drawable-canvas is present -> real drawing
-# - Otherwise -> "light editor" (rotate / brightness / contrast) (still printable)
+# Painter-like editor (AUTO-APPLY; no Save button)
 # =============================================================================
 def _to_printable_png(b: bytes, *, max_px: int = ANNOT_MAXPX) -> bytes:
     img = Image.open(io.BytesIO(b))
@@ -697,6 +692,43 @@ def _to_printable_png(b: bytes, *, max_px: int = ANNOT_MAXPX) -> bytes:
     out = io.BytesIO()
     img.save(out, format="PNG", optimize=True)
     return out.getvalue()
+
+
+def _hash_bytes(b: bytes) -> str:
+    return hashlib.md5(b).hexdigest()
+
+
+def _autosave_annotated(url: str, merged_png: bytes) -> None:
+    """
+    Fast autosave with throttle + content hash.
+    """
+    ss = st.session_state
+    url = _s(url)
+    if not url:
+        return
+
+    ann: Dict[str, bytes] = ss.get(SS_PHOTO_ANNOTATED, {}) or {}
+    meta: Dict[str, Dict[str, Any]] = ss.get(SS_ANN_META, {}) or {}
+
+    now = time.time()
+    last = meta.get(url) or {}
+    last_ts = float(last.get("ts") or 0.0)
+    if (now - last_ts) < ANN_AUTOSAVE_MIN_INTERVAL:
+        return
+
+    # Normalize once to printable size, then hash
+    printable = _to_printable_png(merged_png)
+    h = _hash_bytes(printable)
+
+    if _s(last.get("hash")) == h:
+        meta[url] = {"hash": h, "ts": now}
+        ss[SS_ANN_META] = meta
+        return
+
+    ann[url] = printable
+    meta[url] = {"hash": h, "ts": now}
+    ss[SS_PHOTO_ANNOTATED] = ann
+    ss[SS_ANN_META] = meta
 
 
 @st.fragment
@@ -715,7 +747,6 @@ def _editor_block(
     ss = st.session_state
     annotated: Dict[str, bytes] = ss.get(SS_PHOTO_ANNOTATED, {}) or {}
 
-    # ensure full bytes
     _ensure_full_bytes_selected(url, fetch_image=fetch_image)
     pb: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
     src = pb.get(url)
@@ -724,129 +755,124 @@ def _editor_block(
         return
 
     st.markdown("<div class='t6-editor-box'>", unsafe_allow_html=True)
-    st.markdown(f"**Edit selected photo** — {_label(labels, url)}")
+    st.markdown(f"**Edit photo (Paint-like)** — {_label(labels, url)}")
 
-    # if already annotated, use that as base
+    # FULL-HD preview (always, after selection)
+    # Uses annotated if exists, else original
+    preview_bytes = annotated.get(url) or src
+    st.image(preview_bytes, use_container_width=True, caption="Full HD preview (prints exactly)")
+
+    if locked:
+        st.caption("Report is locked. Editing disabled.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Base image for canvas: use annotated if exists else original (so edits continue)
     base_bytes = annotated.get(url) or src
 
     if _HAS_CANVAS and st_canvas is not None:
-        # Canvas draws OVER the image; we then merge and store bytes.
-        # NOTE: This is the closest “Paint-like” in Streamlit.
-        try:
-            img = Image.open(io.BytesIO(base_bytes))
-            img = ImageOps.exif_transpose(img).convert("RGBA")
+        # Prepare base image for fast interactive canvas
+        img = Image.open(io.BytesIO(base_bytes))
+        img = ImageOps.exif_transpose(img).convert("RGBA")
 
-            max_w = 900
-            w, h = img.size
-            if w > max_w:
-                scale = max_w / float(w)
-                img = img.resize((int(w * scale), int(h * scale)), Image.Resampling.LANCZOS)
+        w, h = img.size
+        if w > EDITOR_CANVAS_MAX_W:
+            scale = EDITOR_CANVAS_MAX_W / float(w)
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
 
-            bg_rgba = img
-            bg_png = io.BytesIO()
-            bg_rgba.save(bg_png, format="PNG")
-            bg_png = bg_png.getvalue()
-
-            c1, c2, c3 = st.columns([1, 1, 1], gap="small")
-            with c1:
-                mode = st.selectbox(
-                    "Tool",
-                    ["freedraw", "line", "rect", "circle", "transform"],
-                    key=_key("ed_tool", scope_key),
-                    disabled=locked,
-                )
-            with c2:
-                stroke = st.slider("Stroke", 1, 20, 3, key=_key("ed_stroke", scope_key), disabled=locked)
-            with c3:
-                fill = st.toggle("Fill shapes", value=False, key=_key("ed_fill", scope_key), disabled=locked)
-
-            # Keep default colors (user can choose in UI if needed later)
-            canvas = st_canvas(
-                fill_color="rgba(255, 0, 0, 0.0)" if not fill else "rgba(255, 0, 0, 0.18)",
-                stroke_width=stroke,
-                stroke_color="rgba(255, 0, 0, 0.85)",
-                background_color="rgba(0, 0, 0, 0)",
-                background_image=Image.open(io.BytesIO(bg_png)),
-                update_streamlit=True,
-                height=bg_rgba.size[1],
-                width=bg_rgba.size[0],
-                drawing_mode=mode,
-                key=_key("canvas", scope_key),
+        # Toolbar
+        t1, t2, t3, t4 = st.columns([1.1, 1.0, 1.0, 1.3], gap="small")
+        with t1:
+            mode = st.selectbox(
+                "Tool",
+                ["freedraw", "line", "rect", "circle", "transform"],
+                index=0,
+                key=_key("ed_tool", scope_key),
             )
+        with t2:
+            stroke = st.slider("Stroke", 1, 20, 3, key=_key("ed_stroke", scope_key))
+        with t3:
+            fill = st.toggle("Fill", value=False, key=_key("ed_fill", scope_key))
+        with t4:
+            if st.button("Reset edits", use_container_width=True, key=_key("ed_reset", scope_key)):
+                annotated.pop(url, None)
+                ss[SS_PHOTO_ANNOTATED] = annotated
+                ss[SS_ANN_META] = ss.get(SS_ANN_META, {}) or {}
+                st.toast("Edits reset", icon="🧽")
+                st.rerun()
 
-            a1, a2, a3 = st.columns([1, 1, 1], gap="small")
-            with a1:
-                if st.button("Save edits", use_container_width=True, key=_key("ed_save", scope_key), disabled=locked):
-                    # Merge: background + drawn layer
-                    if canvas.image_data is not None:
-                        overlay = Image.fromarray(canvas.image_data.astype("uint8"), mode="RGBA")
-                        merged = Image.alpha_composite(bg_rgba.convert("RGBA"), overlay.convert("RGBA"))
-                        out = io.BytesIO()
-                        merged.save(out, format="PNG", optimize=True)
-                        annotated[url] = _to_printable_png(out.getvalue())
-                        ss[SS_PHOTO_ANNOTATED] = annotated
-                        st.success("Edits saved.")
-                        st.rerun()
-            with a2:
-                if st.button("Reset edits", use_container_width=True, key=_key("ed_reset", scope_key), disabled=locked):
-                    annotated.pop(url, None)
-                    ss[SS_PHOTO_ANNOTATED] = annotated
-                    st.rerun()
-            with a3:
-                st.caption("Saved edits will be printed in report.")
+        # Canvas
+        canvas = st_canvas(
+            fill_color="rgba(255, 0, 0, 0.0)" if not fill else "rgba(255, 0, 0, 0.18)",
+            stroke_width=int(stroke),
+            stroke_color="rgba(255, 0, 0, 0.85)",
+            background_color="rgba(0, 0, 0, 0)",
+            background_image=img,
+            update_streamlit=True,
+            height=img.size[1],
+            width=img.size[0],
+            drawing_mode=mode,
+            key=_key("canvas", scope_key),
+        )
 
-            # preview saved
-            if url in annotated:
-                st.image(annotated[url], caption="Saved annotated version", use_container_width=True)
-
+        # AUTO-APPLY (no Save button):
+        # When canvas updates, merge background + overlay and autosave.
+        try:
+            if canvas.image_data is not None:
+                overlay = Image.fromarray(canvas.image_data.astype("uint8"), mode="RGBA")
+                merged = Image.alpha_composite(img.convert("RGBA"), overlay.convert("RGBA"))
+                out = io.BytesIO()
+                merged.save(out, format="PNG", optimize=True)
+                _autosave_annotated(url, out.getvalue())
         except Exception:
-            st.warning("Canvas editor failed on this environment. Using light editor below.")
-            _HAS = False
-        else:
-            st.markdown("</div>", unsafe_allow_html=True)
-            return
+            # keep UI stable (no hard error)
+            pass
 
-    # Light editor fallback (still printable)
-    st.caption("Light editor (fallback): rotate / brightness / contrast. Saved output prints in report.")
+        st.caption("Edits apply automatically (no Save). The preview above updates on rerun.")
+        st.markdown("</div>", unsafe_allow_html=True)
+        return
+
+    # Fallback light editor (also AUTO-APPLY)
+    st.caption("Canvas editor not available. Using auto light-editor (rotate/brightness/contrast).")
+
+    def _apply_light_now() -> None:
+        rot = int(st.session_state.get(_key("rot", scope_key)) or 0)
+        br = float(st.session_state.get(_key("br", scope_key)) or 1.0)
+        ct = float(st.session_state.get(_key("ct", scope_key)) or 1.0)
+
+        img2 = Image.open(io.BytesIO(src))
+        img2 = ImageOps.exif_transpose(img2).convert("RGB")
+        if rot:
+            img2 = img2.rotate(rot, expand=True)
+        img2 = ImageEnhance.Brightness(img2).enhance(br)
+        img2 = ImageEnhance.Contrast(img2).enhance(ct)
+        out2 = io.BytesIO()
+        img2.save(out2, format="PNG", optimize=True)
+        _autosave_annotated(url, out2.getvalue())
+
     colL, colR = st.columns([1, 1], gap="large")
     with colL:
-        rot = st.selectbox("Rotate", [0, 90, 180, 270], index=0, key=_key("rot", scope_key), disabled=locked)
-        br = st.slider("Brightness", 0.6, 1.4, 1.0, 0.02, key=_key("br", scope_key), disabled=locked)
-        ct = st.slider("Contrast", 0.6, 1.4, 1.0, 0.02, key=_key("ct", scope_key), disabled=locked)
+        st.selectbox("Rotate", [0, 90, 180, 270], index=0, key=_key("rot", scope_key), on_change=_apply_light_now)
+        st.slider("Brightness", 0.6, 1.4, 1.0, 0.02, key=_key("br", scope_key), on_change=_apply_light_now)
+        st.slider("Contrast", 0.6, 1.4, 1.0, 0.02, key=_key("ct", scope_key), on_change=_apply_light_now)
 
-        if st.button("Save light edits", use_container_width=True, key=_key("save_light", scope_key), disabled=locked):
-            img = Image.open(io.BytesIO(src))
-            img = ImageOps.exif_transpose(img).convert("RGB")
-            if rot:
-                img = img.rotate(rot, expand=True)
-            img = ImageEnhance.Brightness(img).enhance(br)
-            img = ImageEnhance.Contrast(img).enhance(ct)
-            out = io.BytesIO()
-            img.save(out, format="PNG", optimize=True)
-            annotated[url] = _to_printable_png(out.getvalue())
-            ss[SS_PHOTO_ANNOTATED] = annotated
-            st.success("Saved.")
-            st.rerun()
-
-        if st.button("Reset light edits", use_container_width=True, key=_key("reset_light", scope_key), disabled=locked):
+        if st.button("Reset edits", use_container_width=True, key=_key("reset_light", scope_key)):
             annotated.pop(url, None)
             ss[SS_PHOTO_ANNOTATED] = annotated
+            st.toast("Edits reset", icon="🧽")
             st.rerun()
 
     with colR:
-        preview = annotated.get(url) or src
-        st.image(preview, caption="Preview (will print)", use_container_width=True)
+        preview2 = (st.session_state.get(SS_PHOTO_ANNOTATED, {}) or {}).get(url) or src
+        st.image(preview2, caption="Preview (prints)", use_container_width=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 
 # =============================================================================
-# Photo picker (Enterprise):
-# - Single photo per finding
-# - Select => instantly lock and hide others
-# - Pagination + Search
-# - Hover HD for subset only
-# - Exclude photos already used in this observation block
+# Photo picker (single photo per finding)
+# - Select => immediately lock + hide others
+# - After selection, editor shows FULL HD preview
 # =============================================================================
 @st.fragment
 def _render_photo_picker_single(
@@ -865,23 +891,19 @@ def _render_photo_picker_single(
     row_locks: Dict[str, bool] = ss.get(SS_ROW_PICK_LOCK, {}) or {}
     is_locked_row = bool(row_locks.get(scope_key, False))
 
-    # selection (single)
     selected = _s(rr.get("photo"))
     if selected and selected not in all_urls:
         selected = ""
         rr["photo"] = ""
 
-    # exclude already used (except current selected)
     urls = [u for u in all_urls if (u == selected) or (u not in used_urls)]
 
-    # UI state
     pages: Dict[str, int] = ss.get(SS_ROW_PICK_PAGE, {}) or {}
     searches: Dict[str, str] = ss.get(SS_ROW_PICK_SEARCH, {}) or {}
 
     q = _s(searches.get(scope_key, ""))
     page = int(pages.get(scope_key, 1) or 1)
 
-    # header
     h1, h2, h3 = st.columns([1.0, 1.2, 1.0], gap="small")
     with h1:
         st.caption(f"Available: {len(urls)}")
@@ -889,19 +911,20 @@ def _render_photo_picker_single(
         st.caption(f"Selected: {'Yes' if bool(selected) else 'No'}")
     with h3:
         if is_locked_row and selected:
-            if st.button("Edit", use_container_width=True, key=_key("unlock", scope_key), disabled=locked):
+            if st.button("Edit selection", use_container_width=True, key=_key("unlock", scope_key), disabled=locked):
                 row_locks[scope_key] = False
                 ss[SS_ROW_PICK_LOCK] = row_locks
                 st.rerun()
 
-    # If locked => show only selected card (super fast)
+    # Locked: show selected only (and make sure we have FULL bytes)
     if is_locked_row and selected:
+        _ensure_full_bytes_selected(selected, fetch_image=fetch_image)
         th, hd = _thumb_and_hd(selected, fetch_image=fetch_image, want_hd=True)
         st.markdown(_card_html(th, hd, _label(labels, selected)), unsafe_allow_html=True)
         rr["photos"] = [selected]
         return rr
 
-    # Search + pagination (inline, still same page)
+    # Search + pagination
     cS, cP, cC = st.columns([2.0, 1.0, 1.0], gap="small")
     with cS:
         q2 = st.text_input(
@@ -923,7 +946,7 @@ def _render_photo_picker_single(
 
     filtered = [u for u in urls if (q2 in _label(labels, u).lower())] if q2 else list(urls)
     if not filtered:
-        st.info("No images match your search (or all are already used in other findings).")
+        st.info("No images match your search (or all are used in other findings).")
         rr["photos"] = []
         return rr
 
@@ -950,7 +973,6 @@ def _render_photo_picker_single(
     start = (page - 1) * PER_PAGE
     chunk = filtered[start:start + PER_PAGE]
 
-    # HD subset only for first visible items
     hd_set = set(chunk[: min(HOVER_HD_BUDGET, len(chunk))])
 
     cols = GRID_COLS
@@ -968,8 +990,6 @@ def _render_photo_picker_single(
                 st.markdown(_card_html(th, hd, _label(labels, url)), unsafe_allow_html=True)
 
                 st.markdown("<div class='t6-actions'>", unsafe_allow_html=True)
-
-                # Single-select: clicking Select locks and hides others immediately
                 if st.button("Select", use_container_width=True, key=_key("sel", scope_key, urls.index(url)), disabled=locked):
                     rr["photo"] = url
                     rr["photos"] = [url]
@@ -978,7 +998,6 @@ def _render_photo_picker_single(
                     row_locks[scope_key] = True
                     ss[SS_ROW_PICK_LOCK] = row_locks
                     st.rerun()
-
                 st.markdown("</div>", unsafe_allow_html=True)
 
     rr["photos"] = [rr["photo"]] if rr.get("photo") else []
@@ -987,6 +1006,7 @@ def _render_photo_picker_single(
 
 # =============================================================================
 # Merge to final (includes annotated bytes)
+# - IMPORTANT: we store "photo_bytes" in row using annotated if exists, else original.
 # =============================================================================
 def _merge_to_final() -> List[Dict[str, Any]]:
     obs = st.session_state.get(SS_OBS, []) or []
@@ -1030,22 +1050,24 @@ def _merge_to_final() -> List[Dict[str, Any]]:
                 finding = _s(rr.get("finding"))
                 compliance = _s(rr.get("Compliance"))
 
-                # single photo
                 p = _s(rr.get("photo"))
-                photos = [p] if p else []
-                photo_bytes_list: List[Optional[bytes]] = [photo_cache.get(p)] if p else []
-                annotated_list: List[Optional[bytes]] = [ann_cache.get(p)] if p else []
+                if not (finding or compliance or p):
+                    continue
 
-                if finding or compliance or photos:
-                    major_table.append(
-                        {
-                            "finding": finding,
-                            "Compliance": compliance,
-                            "photos": photos,
-                            "photo_bytes_list": photo_bytes_list,
-                            "annotated_photo_bytes_list": annotated_list,
-                        }
-                    )
+                # SINGLE photo, but we provide a direct bytes field for the report:
+                # annotated wins (paint edits), else original cached
+                chosen_bytes = ann_cache.get(p) or photo_cache.get(p)
+
+                major_table.append(
+                    {
+                        "finding": finding,
+                        # keep BOTH keys for backward compatibility with your report code(s)
+                        "Compliance": compliance,
+                        "compliance": compliance,
+                        "photo": p,                     # for report that expects single "photo"
+                        "photo_bytes": chosen_bytes,     # for report that supports direct bytes
+                    }
+                )
 
             recs = [x for x in (blk.get("recommendations") or []) if _s(x)]
 
@@ -1110,7 +1132,6 @@ def render_step(
 
     tools_opts = ["", "Yes", "No", "N/A"]
 
-    # Render components
     for comp_i, comp3 in enumerate(obs):
         comp_title = _s(comp3.get("title")) or f"Component {comp_i + 1}"
         comp_id = _s(comp3.get("comp_id"))
@@ -1142,7 +1163,6 @@ def render_step(
                     )
             blocks = blocks[: len(obs_valid)]
 
-            # Sync titles
             for j in range(len(obs_valid)):
                 blocks[j] = _ensure_obs_block(blocks[j])
                 blocks[j]["obs_index"] = j
@@ -1154,7 +1174,6 @@ def render_step(
                 st.markdown("---")
                 st.markdown(f"### {_obs_number(comp_i, obs_i)} — {blk['obs_title']}")
 
-                # Audio playlist (per observation)
                 _audio_playlist_block(
                     audio_urls=audio_urls,
                     fetch_audio=fetch_audio,
@@ -1169,14 +1188,12 @@ def render_step(
                 rows: List[Dict[str, Any]] = blk.get("findings") or [_ensure_finding_row({})]
                 new_rows: List[Dict[str, Any]] = []
 
-                # used urls in this observation block (to prevent reuse)
                 used_in_blk = _used_urls_in_block(blk)
 
                 for r_idx, rr in enumerate(rows):
                     rr = _ensure_finding_row(rr)
                     scope_row = f"c{comp_i}.o{obs_i}.r{r_idx}"
 
-                    # recompute used set excluding this row's current selection
                     cur_sel = _s(rr.get("photo"))
                     used_now = set(used_in_blk)
                     if cur_sel:
@@ -1216,7 +1233,7 @@ def render_step(
                         used_urls=used_now,
                     )
 
-                    # when selected: show editor immediately
+                    # When selected: show FULL-HD preview + auto paint editor
                     if _s(rr.get("photo")):
                         _editor_block(
                             url=_s(rr.get("photo")),
@@ -1229,31 +1246,18 @@ def render_step(
                     st.markdown("</div>", unsafe_allow_html=True)
                     new_rows.append(rr)
 
-                    # update used set progressively so later findings won't see earlier selections
                     if _s(rr.get("photo")):
                         used_in_blk.add(_s(rr.get("photo")))
 
-                # Row controls
                 btns = st.columns([1, 1], gap="small")
                 with btns[0]:
-                    if st.button(
-                        "Add another finding",
-                        key=_key("add_row", comp_i, obs_i),
-                        use_container_width=True,
-                        disabled=locked,
-                    ):
+                    if st.button("Add another finding", key=_key("add_row", comp_i, obs_i), use_container_width=True, disabled=locked):
                         new_rows.append(_ensure_finding_row({}))
                         blk["findings"] = new_rows
                         blocks[obs_i] = blk
                         st.rerun()
-
                 with btns[1]:
-                    if st.button(
-                        "Remove last finding",
-                        key=_key("rm_row", comp_i, obs_i),
-                        use_container_width=True,
-                        disabled=locked,
-                    ) and len(new_rows) > 1:
+                    if st.button("Remove last finding", key=_key("rm_row", comp_i, obs_i), use_container_width=True, disabled=locked) and len(new_rows) > 1:
                         new_rows = new_rows[:-1]
                         blk["findings"] = new_rows
                         blocks[obs_i] = blk
@@ -1261,9 +1265,9 @@ def render_step(
 
                 blk["findings"] = new_rows
 
-                # Recommendations
                 st.divider()
                 st.markdown("**Recommendations**")
+
                 recs: List[str] = blk.get("recommendations") or [""]
                 new_recs: List[str] = []
                 for p_idx, txt in enumerate(recs):
@@ -1299,12 +1303,10 @@ def render_step(
 
     st.session_state[SS_FIND] = find_list
 
+    # Merge continuously (cheap) so report is always up-to-date
     _merge_to_final()
-    status_card("Saved", "Findings & recommendations saved and merged for DOCX generation.", level="success")
 
-    # -------------------------------------------------------------------------
-    # FINAL LOCK SYSTEM (no multi-page; still same page)
-    # -------------------------------------------------------------------------
+    # Sticky lock controls (UI stays the same)
     st.markdown("<div class='t6-sticky'><div class='t6-sticky-inner'>", unsafe_allow_html=True)
     cL, cR = st.columns([1, 1], gap="small")
     with cL:
@@ -1312,7 +1314,7 @@ def render_step(
             if st.button("🔒 Lock Report (Finalize Step 4)", use_container_width=True, type="primary"):
                 st.session_state[SS_FINAL_LOCKED] = True
                 st.session_state[SS_LOCK] = True
-                st.success("Report locked successfully.")
+                st.toast("Report locked", icon="🔒")
                 st.rerun()
         else:
             st.success("Report is locked. Editing disabled.")
@@ -1321,6 +1323,7 @@ def render_step(
             if st.button("Unlock (Admin Only)", use_container_width=True):
                 st.session_state[SS_FINAL_LOCKED] = False
                 st.session_state[SS_LOCK] = False
+                st.toast("Unlocked", icon="🔓")
                 st.rerun()
     st.markdown("</div></div>", unsafe_allow_html=True)
 
