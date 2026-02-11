@@ -4,7 +4,7 @@ from __future__ import annotations
 import hashlib
 import re
 from datetime import date, datetime
-from typing import Dict, Tuple, List, Optional, Any
+from typing import Any, Dict, List, Optional, Tuple
 
 import streamlit as st
 
@@ -38,7 +38,6 @@ SS_DATEFMTS = "general_info_date_formats"
 SS_MONEY_CUR = "general_info_cost_currency"
 SS_MONEY_AMT = "general_info_cost_amount"
 SS_CSS_ONCE = "_t6_step2_css_once"
-SS_LAST_TOAST = "_t6_step2_last_toast"  # throttle toasts
 
 
 # -----------------------------------------------------------------------------
@@ -56,48 +55,41 @@ def _k(field: str, suffix: str) -> str:
     return f"t6.s2.{_md5_10(field)}.{suffix}"
 
 
-def _cols2(gap: str = "large"):
-    return st.columns([1, 1], gap=gap)
-
-
-def _section_title(text: str) -> None:
-    st.markdown(f"### {text}")
-
-
 def _inject_css_once() -> None:
     if st.session_state.get(SS_CSS_ONCE):
         return
     st.session_state[SS_CSS_ONCE] = True
     st.markdown(
         """
-        <style>
-          div[data-testid="stTextInput"] input,
-          div[data-testid="stTextArea"] textarea,
-          div[data-testid="stNumberInput"] input,
-          div[data-testid="stSelectbox"] div[role="combobox"],
-          div[data-testid="stDateInput"] input { width: 100% !important; }
+<style>
+  div[data-testid="stTextInput"] input,
+  div[data-testid="stTextArea"] textarea,
+  div[data-testid="stNumberInput"] input,
+  div[data-testid="stSelectbox"] div[role="combobox"],
+  div[data-testid="stDateInput"] input { width: 100% !important; }
 
-          [data-testid="stVerticalBlock"] { gap: 0.70rem; }
-          .stCaption { margin-top: -6px; }
+  [data-testid="stVerticalBlock"] { gap: 0.60rem; }
+  .stCaption { margin-top: -6px; }
 
-          button[data-baseweb="tab"] { padding: 8px 12px; }
-
-          @media (max-width: 700px){
-            .block-container { padding-left: 1rem; padding-right: 1rem; }
-          }
-        </style>
-        """,
+  @media (max-width: 700px){
+    .block-container { padding-left: 1rem; padding-right: 1rem; }
+  }
+</style>
+""",
         unsafe_allow_html=True,
     )
 
 
 def _init_state() -> None:
     ss = st.session_state
-    ss.setdefault(SS_OVERRIDES, {})
-    ss.setdefault(SS_DATEFMTS, {})
-    ss.setdefault(SS_MONEY_CUR, {})
-    ss.setdefault(SS_MONEY_AMT, {})
-    ss.setdefault(SS_LAST_TOAST, 0.0)
+    if SS_OVERRIDES not in ss or not isinstance(ss[SS_OVERRIDES], dict):
+        ss[SS_OVERRIDES] = {}
+    if SS_DATEFMTS not in ss or not isinstance(ss[SS_DATEFMTS], dict):
+        ss[SS_DATEFMTS] = {}
+    if SS_MONEY_CUR not in ss or not isinstance(ss[SS_MONEY_CUR], dict):
+        ss[SS_MONEY_CUR] = {}
+    if SS_MONEY_AMT not in ss or not isinstance(ss[SS_MONEY_AMT], dict):
+        ss[SS_MONEY_AMT] = {}
 
 
 def _get_default(field: str, ctx: Tool6Context) -> str:
@@ -109,20 +101,10 @@ def _get_value(field: str, ctx: Tool6Context) -> str:
     return _s(overrides.get(field, _get_default(field, ctx)))
 
 
-def _show_hint(field: str, ctx: Tool6Context) -> None:
-    hint = _s((ctx.hints or {}).get(field, ""))
-    if hint:
-        st.caption(hint)
-
-
-def _toast_saved(msg: str = "Saved") -> None:
-    # throttle toasts so UI feels stable
-    now = datetime.utcnow().timestamp()
-    last = float(st.session_state.get(SS_LAST_TOAST, 0.0))
-    if now - last < 0.6:
-        return
-    st.session_state[SS_LAST_TOAST] = now
-    st.toast(msg, icon="✅")
+def _hint(field: str, ctx: Tool6Context) -> None:
+    h = _s((ctx.hints or {}).get(field, ""))
+    if h:
+        st.caption(h)
 
 
 def _set_override_if_changed(field: str, value: str) -> None:
@@ -139,7 +121,6 @@ def _set_override_if_changed(field: str, value: str) -> None:
 
     overrides[field] = newv
     ss[SS_OVERRIDES] = overrides
-    _toast_saved(f"{field} saved")
 
 
 def _ensure_widget_default(widget_key: str, default_value: Any) -> None:
@@ -267,21 +248,19 @@ def _apply_money_override(field: str, *, amt_key: str, cur_key: str) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Widgets (SUPER FAST FEEL)
+# Widgets (fast + minimal)
 # -----------------------------------------------------------------------------
 def w_text(field: str, ctx: Tool6Context, *, placeholder: str = "", help_text: str = "") -> None:
     k = _k(field, "text")
     _ensure_widget_default(k, _get_value(field, ctx))
-
     st.text_input(
         field,
         key=k,
         placeholder=placeholder,
         help=help_text or None,
-        # default behaviour: triggers on enter/blur, not every keystroke
         on_change=lambda: _set_override_if_changed(field, _s(st.session_state.get(k))),
     )
-    _show_hint(field, ctx)
+    _hint(field, ctx)
 
 
 def w_select(field: str, ctx: Tool6Context, options: List[str], *, allow_empty: bool = True, help_text: str = "") -> None:
@@ -292,7 +271,6 @@ def w_select(field: str, ctx: Tool6Context, options: List[str], *, allow_empty: 
 
     k = _k(field, "select")
     _ensure_widget_default(k, cur)
-
     st.selectbox(
         field,
         options=opts,
@@ -300,7 +278,7 @@ def w_select(field: str, ctx: Tool6Context, options: List[str], *, allow_empty: 
         help=help_text or None,
         on_change=lambda: _set_override_if_changed(field, _s(st.session_state.get(k))),
     )
-    _show_hint(field, ctx)
+    _hint(field, ctx)
 
 
 def w_yes_no(field: str, ctx: Tool6Context, *, allow_empty: bool = True) -> None:
@@ -316,37 +294,34 @@ def w_percent(field: str, ctx: Tool6Context) -> None:
 
     k = _k(field, "percent")
     _ensure_widget_default(k, float(cur_f))
-
     st.number_input(
         field,
         min_value=0.0,
         max_value=100.0,
         step=1.0,
         key=k,
-        help="Enter a value from 0 to 100.",
+        help="0 to 100",
         on_change=lambda: _set_override_if_changed(field, f"{float(st.session_state.get(k) or 0.0):.0f}"),
     )
-    _show_hint(field, ctx)
+    _hint(field, ctx)
 
 
 def w_email(field: str, ctx: Tool6Context, *, placeholder: str = "name@example.com") -> None:
     k = _k(field, "email")
     _ensure_widget_default(k, _get_value(field, ctx))
-
     st.text_input(
         field,
         key=k,
         placeholder=placeholder,
-        help="Please enter a valid email address.",
+        help="Valid email only.",
         on_change=lambda: _set_override_if_changed(field, _s(st.session_state.get(k))),
     )
-
     val = _s(st.session_state.get(k))
     ok, msg = validate_email(val)
     if (not ok) and val:
-        st.error(f"Invalid email: {msg}")
+        st.error(msg)
     else:
-        _show_hint(field, ctx)
+        _hint(field, ctx)
 
 
 def w_af_phone(field: str, ctx: Tool6Context) -> None:
@@ -356,23 +331,18 @@ def w_af_phone(field: str, ctx: Tool6Context) -> None:
     k = _k(field, "phone9")
     _ensure_widget_default(k, nine)
 
+    def _apply():
+        v = _extract_af_9digits(_s(st.session_state.get(k)))
+        _set_override_if_changed(field, (f"+93{v}" if v else ""))
+
     st.text_input(
         field,
         key=k,
         placeholder="9 digits (e.g., 701234567)",
-        help="Enter 9 digits only. Leading 0 will be removed automatically.",
-        on_change=lambda: _set_override_if_changed(
-            field,
-            (f"+93{_extract_af_9digits(_s(st.session_state.get(k)))}"
-             if _extract_af_9digits(_s(st.session_state.get(k))) else "")
-        ),
+        help="9 digits only (Afghanistan).",
+        on_change=_apply,
     )
-
-    nine2 = _extract_af_9digits(_s(st.session_state.get(k)))
-    if nine2 and len(nine2) != 9:
-        st.warning("Phone number must be exactly 9 digits after +93.")
-
-    _show_hint(field, ctx)
+    _hint(field, ctx)
 
 
 def w_date(field: str, ctx: Tool6Context) -> None:
@@ -404,17 +374,17 @@ def w_date(field: str, ctx: Tool6Context) -> None:
             "Format",
             options=DATE_FORMAT_LABELS,
             key=fk,
-            help="This format affects only this field (cover will not change).",
+            help="Applies only to this field.",
             on_change=_apply_date_override,
             kwargs={"field": field, "date_key": dk, "fmt_key": fk},
         )
 
-    st.caption(f"Cover: {cover_label} • Field: {_s(st.session_state.get(fk))}")
-    _show_hint(field, ctx)
-
-    # apply once (cheap)
-    if field not in (st.session_state.get(SS_OVERRIDES, {}) or {}):
+    # apply once if override missing
+    overrides = st.session_state.get(SS_OVERRIDES, {}) or {}
+    if field not in overrides:
         _apply_date_override(field, date_key=dk, fmt_key=fk)
+
+    _hint(field, ctx)
 
 
 def w_money(field: str, ctx: Tool6Context) -> None:
@@ -442,7 +412,7 @@ def w_money(field: str, ctx: Tool6Context) -> None:
             min_value=0.0,
             step=1.0,
             key=ak,
-            help="Enter the amount.",
+            help="Amount",
             on_change=_apply_money_override,
             kwargs={"field": field, "amt_key": ak, "cur_key": ck},
         )
@@ -455,20 +425,21 @@ def w_money(field: str, ctx: Tool6Context) -> None:
             kwargs={"field": field, "amt_key": ak, "cur_key": ck},
         )
 
-    _show_hint(field, ctx)
-
-    if field not in (st.session_state.get(SS_OVERRIDES, {}) or {}):
+    overrides = st.session_state.get(SS_OVERRIDES, {}) or {}
+    if field not in overrides:
         _apply_money_override(field, amt_key=ak, cur_key=ck)
+
+    _hint(field, ctx)
 
 
 # -----------------------------------------------------------------------------
-# Fragmented tabs (reduces UI churn)
+# Tabs (fragmented to reduce churn)
 # -----------------------------------------------------------------------------
 @st.fragment
 def _tab_project(ctx: Tool6Context) -> None:
-    _section_title("Project Details")
+    st.markdown("### Project Details")
 
-    left, right = _cols2()
+    left, right = st.columns(2, gap="large")
     with left:
         w_text("Province", ctx)
         w_text("District", ctx)
@@ -483,16 +454,14 @@ def _tab_project(ctx: Tool6Context) -> None:
         w_select("Project Status", ctx, ["Ongoing", "Completed", "Suspended"], allow_empty=True)
         w_select("Project progress", ctx, ["Ahead of Schedule", "On Schedule", "Running behind"], allow_empty=True)
 
-    st.divider()
-    _section_title("Contract & Progress")
-
-    c1, c2 = _cols2()
+    st.markdown("### Contract & Progress")
+    c1, c2 = st.columns(2, gap="large")
     with c1:
         w_date("Contract Start Date", ctx)
     with c2:
         w_date("Contract End Date", ctx)
 
-    c3, c4 = _cols2()
+    c3, c4 = st.columns(2, gap="large")
     with c3:
         w_percent("Previous Physical Progress (%)", ctx)
     with c4:
@@ -501,11 +470,11 @@ def _tab_project(ctx: Tool6Context) -> None:
 
 @st.fragment
 def _tab_respondent(ctx: Tool6Context) -> None:
-    _section_title("Respondent / Participant")
+    st.markdown("### Respondent / Participant")
 
     w_text("Name of the respondent (Participant / UNICEF / IPs)", ctx)
 
-    c1, c2 = _cols2(gap="large")
+    c1, c2 = st.columns(2, gap="large")
     with c1:
         w_select("Sex of Respondent", ctx, ["Male", "Female"], allow_empty=True)
         w_af_phone("Contact Number of the Respondent", ctx)
@@ -515,9 +484,9 @@ def _tab_respondent(ctx: Tool6Context) -> None:
 
 @st.fragment
 def _tab_monitoring(ctx: Tool6Context) -> None:
-    _section_title("Monitoring & Reporting")
+    st.markdown("### Monitoring & Reporting")
 
-    left, right = _cols2()
+    left, right = st.columns(2, gap="large")
     with left:
         w_text("Name of the IP, Organization / NGO", ctx)
         w_text("Name of the monitor engineer", ctx)
@@ -532,9 +501,9 @@ def _tab_monitoring(ctx: Tool6Context) -> None:
 
 @st.fragment
 def _tab_status_other(ctx: Tool6Context) -> None:
-    _section_title("Status / Risk / Other")
+    st.markdown("### Status / Risk / Other")
 
-    left, right = _cols2()
+    left, right = st.columns(2, gap="large")
     with left:
         w_text("Reason for delay", ctx)
         w_text("CDC Code", ctx)
@@ -545,10 +514,9 @@ def _tab_status_other(ctx: Tool6Context) -> None:
         w_yes_no("Work safety considered", ctx, allow_empty=True)
         w_yes_no("Environmental risk", ctx, allow_empty=True)
 
-    st.divider()
-    _section_title("Available documents on site")
+    st.markdown("### Available documents on site")
 
-    d1, d2 = _cols2()
+    d1, d2 = st.columns(2, gap="large")
     docs_left = ["Contract", "Journal", "BOQ", "Design drawings"]
     docs_right = ["Site engineer", "Geophysical tests", "Water quality tests", "Pump test results"]
 
@@ -577,7 +545,5 @@ def render_step(ctx: Tool6Context) -> bool:
     with tabs[3]:
         _tab_status_other(ctx)
 
-    # NO heavy status cards here (they cause visual jitter)
-    st.caption("✅ Changes apply instantly. (Saved automatically)")
-
+    st.caption("Changes apply instantly.")
     return True
