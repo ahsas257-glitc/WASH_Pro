@@ -3,12 +3,13 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
-from io import BytesIO
+import time
 from datetime import datetime
+from io import BytesIO
 from typing import Any, Dict, List, Optional, Tuple, Callable
 
 import streamlit as st
-from PIL import Image
+from PIL import Image, ImageOps
 
 from src.Tools.utils.types import Tool6Context
 
@@ -26,124 +27,43 @@ SS_PHOTO_THUMBS = "photo_thumbs"        # shared thumbs cache: {url: jpg_bytes}
 SS_COVER_PICK_LOCKED = "tool6_cover_pick_locked"
 SS_COVER_PICK_SEARCH = "tool6_cover_pick_search"
 SS_COVER_PICK_PAGE = "tool6_cover_pick_page"
-SS_COVER_THUMBS = "tool6_cover_thumbs"  # local thumbs cache (fast, small)
+SS_COVER_THUMBS = "tool6_cover_thumbs"      # local thumbs cache
 SS_COVER_UPLOAD_BYTES = "cover_upload_bytes"
 
 SS_COVER_OVERRIDES = "cover_table_overrides"
 SS_COVER_DATE_FMT = "cover_date_format"
 
+# Image fetch cache (TTL)
+SS_IMG_CACHE = "tool6_cover_img_cache"      # {url: {"ts": float, "ok": bool, "bytes": b, "msg": str}}
+SS_IMG_CACHE_CFG = "tool6_cover_img_cache_cfg"
 
-def resolve_cover_bytes() -> Optional[bytes]:
-    """
-    ✅ Step10 calls this (or your wrapper calls it).
-    Must return cover image bytes if available.
-    """
-    b = st.session_state.get(SS_COVER_BYTES)
-    if isinstance(b, (bytes, bytearray)) and b:
-        return bytes(b)
-
-    # legacy fallbacks
-    for k in ("cover_bytes", SS_COVER_UPLOAD_BYTES):
-        bb = st.session_state.get(k)
-        if isinstance(bb, (bytes, bytearray)) and bb:
-            return bytes(bb)
-
-    # fallback: if cover url exists in photo_bytes dict
-    pb = st.session_state.get(SS_PHOTO_BYTES)
-    cu = st.session_state.get(SS_COVER_URL)
-    if isinstance(pb, dict) and cu and cu in pb and pb[cu]:
-        if isinstance(pb[cu], (bytes, bytearray)):
-            return bytes(pb[cu])
-
-    return None
-
-
-def ensure_full_image_bytes(
-    url: str,
-    *,
-    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
-) -> None:
-    """
-    ✅ Compatibility with Step4 imports.
-    Caches FULL bytes in st.session_state["photo_bytes"].
-    """
-    url = _s(url)
-    if not url:
-        return
-    pb: Dict[str, bytes] = st.session_state.get(SS_PHOTO_BYTES, {}) or {}
-    if url in pb and pb[url]:
-        return
-    ok, b, _ = fetch_image(url)
-    if ok and b:
-        pb[url] = b
-        st.session_state[SS_PHOTO_BYTES] = pb
-
-
-def cache_thumbnail_only(
-    url: str,
-    *,
-    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
-) -> None:
-    """
-    ✅ Compatibility with Step4 imports.
-    Stores thumbs into BOTH:
-      - cover-local: tool6_cover_thumbs (fast Step1)
-      - global: photo_thumbs (so Step4 can reuse)
-    """
-    url = _s(url)
-    if not url:
-        return
-
-    thumbs_local: Dict[str, bytes] = st.session_state.get(SS_COVER_THUMBS, {}) or {}
-    thumbs_global: Dict[str, bytes] = st.session_state.get(SS_PHOTO_THUMBS, {}) or {}
-
-    if (url in thumbs_local and thumbs_local[url]) or (url in thumbs_global and thumbs_global[url]):
-        # sync local from global if needed
-        if url not in thumbs_local and url in thumbs_global:
-            thumbs_local[url] = thumbs_global[url]
-            st.session_state[SS_COVER_THUMBS] = thumbs_local
-        return
-
-    ok, b, _ = fetch_image(url)
-    if ok and b:
-        th = _make_thumb_contain(b, box=THUMB_BOX, quality=82)
-        if th:
-            thumbs_local[url] = th
-            thumbs_global[url] = th
-            st.session_state[SS_COVER_THUMBS] = thumbs_local
-            st.session_state[SS_PHOTO_THUMBS] = thumbs_global
-
-
-def render_thumbnail(thumb_bytes: bytes, caption: str) -> None:
-    """
-    ✅ Compatibility with Step4 imports.
-    Renders a square card with 'contain' (no crop).
-    """
-    if not thumb_bytes:
-        st.caption("Preview not available")
-        if caption:
-            st.caption(_s(caption))
-        return
-
-    b64 = base64.b64encode(thumb_bytes).decode("utf-8")
-    cap = _s(caption)
-    st.markdown(
-        f"""
-<div class="t6-thumb-card">
-  <img src="data:image/jpeg;base64,{b64}" />
-  <div class="t6-thumb-cap">{cap}</div>
-</div>
-""",
-        unsafe_allow_html=True,
-    )
+# Widget keys
+W_DATE_FMT_LABEL = "t6_date_fmt_label"
+W_EDIT_TOGGLE = "t6_cover_edit_toggle"
+W_SEARCH = "t6_cover_search"
+W_PAGE = "t6_cover_page"
+W_UPLOAD = "t6_cover_upload"
 
 
 # =============================================================================
 # UI constants
 # =============================================================================
-GRID_COLS = 3
-PER_PAGE = 12
-THUMB_BOX = 220  # square card size
+GRID_COLS = 2               # ✅ ثابت: دو ستون کنار هم
+PER_PAGE = 12               # ✅ برای سرعت در Cloud پایین نگه دارید
+THUMB_BOX = 200             # ✅ کمی کوچک‌تر از قبل (220) برای نمایش خردتر
+
+# Hover HD tuning (performance)
+HOVER_HD_MAXPX = 1600       # کمی کمتر => سریع‌تر
+HOVER_HD_QUALITY = 85
+
+# Cache / limits
+IMG_TTL_OK = 20 * 60
+IMG_TTL_FAIL = 90
+IMG_CACHE_MAX_ITEMS = 600
+IMG_MAX_MB = 25
+
+# Adaptive HD budget (per visible page) - برای سرعت Cloud بهتره کم باشه
+HD_BUDGET = 24
 
 
 # =============================================================================
@@ -184,13 +104,16 @@ AUDIO_EXT_PATTERN = re.compile(r"\.(mp3|wav|m4a|aac|ogg|opus|flac)(\?|#|$)", re.
 NON_IMG_HINT = re.compile(r"\.(pdf|docx?|xlsx?|csv|zip|rar)(\?|#|$)", re.IGNORECASE)
 
 
+# =============================================================================
+# Helpers
+# =============================================================================
 def _s(v: Any) -> str:
     return "" if v is None else str(v).strip()
 
 
 def _key(*parts: Any) -> str:
     raw = ".".join(str(p) for p in parts)
-    return hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()[:10]
+    return hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
 
 def _is_likely_image(url: str, label: str = "") -> bool:
@@ -226,65 +149,76 @@ def _only_images(urls: List[str], labels: Dict[str, str]) -> List[str]:
 
 
 # =============================================================================
-# Thumb (square contain, no crop)
+# CSS (2-column + square cards + hover HD)
 # =============================================================================
-def _make_thumb_contain(img_bytes: bytes, *, box: int, quality: int) -> Optional[bytes]:
-    try:
-        img = Image.open(BytesIO(img_bytes)).convert("RGB")
-        img.thumbnail((box, box), Image.Resampling.LANCZOS)
-
-        bg = Image.new("RGB", (box, box), (32, 32, 36))
-        w, h = img.size
-        bg.paste(img, ((box - w) // 2, (box - h) // 2))
-
-        out = BytesIO()
-        bg.save(out, format="JPEG", quality=quality, optimize=True)
-        return out.getvalue()
-    except Exception:
-        return None
-
-
 def _inject_css() -> None:
     st.markdown(
         f"""
 <style>
-  [data-testid="stVerticalBlock"] {{ gap: 0.70rem; }}
+  [data-testid="stVerticalBlock"] {{ gap: 0.65rem; }}
 
-  .t6-grid {{
-    display:grid;
-    grid-template-columns: repeat({GRID_COLS}, minmax(0, 1fr));
-    gap: 12px;
-    align-items: start;
-  }}
-
-  .t6-thumb-card {{
+  .t6-card {{
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 14px;
     overflow: hidden;
     background: rgba(255,255,255,0.02);
   }}
 
-  .t6-thumb-card img {{
+  /* ✅ مربع واقعی */
+  .t6-imgbox {{
     width: 100%;
-    height: {THUMB_BOX}px;
-    object-fit: contain;             /* ✅ full image */
-    background: rgba(0,0,0,0.10);
-    display:block;
+    aspect-ratio: 1 / 1;
+    background: rgba(0,0,0,0.08);
+    display: grid;
+    place-items: center;
+    position: relative;
+    overflow: hidden;
   }}
 
-  .t6-thumb-cap {{
-    padding: 8px 10px 10px 10px;
-    font-size: 12px;
+  .t6-imgbox img.t6-thumb {{
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display:block;
+    transition: transform 160ms ease, opacity 120ms ease;
+    transform: scale(1.0);
+    opacity: 1;
+  }}
+
+  .t6-imgbox img.t6-hd {{
+    position:absolute;
+    inset:0;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    opacity:0;
+    transform: scale(1.04);
+    transition: opacity 120ms ease, transform 160ms ease;
+    will-change: transform, opacity;
+  }}
+
+  .t6-card:hover .t6-imgbox img.t6-thumb {{
+    transform: scale(1.08);
+    opacity: 0.08;
+  }}
+
+  .t6-card:hover .t6-imgbox img.t6-hd {{
+    opacity: 1;
+    transform: scale(1.14);
+  }}
+
+  .t6-cap {{
+    padding: 6px 10px 8px 10px;
+    font-size: 11px;
     opacity: .86;
     line-height: 1.25;
-    min-height: 40px;
+    min-height: 34px;    /* ✅ هم‌تراز شدن کپشن‌ها */
     word-break: break-word;
+    text-align: right;
   }}
 
-  .t6-btn-row {{
-    display:flex;
-    gap: 10px;                       /* ✅ spacing between buttons */
-    margin-top: 10px;
+  .t6-btn-wrap {{
+    margin-top: 8px;
   }}
 
   .t6-box {{
@@ -301,7 +235,229 @@ def _inject_css() -> None:
 
 
 # =============================================================================
-# Cover defaults
+# Image processing
+# =============================================================================
+def _to_clean_png_bytes(raw: bytes, *, max_px: int = 2600) -> bytes:
+    img = Image.open(BytesIO(raw))
+    img = ImageOps.exif_transpose(img)
+
+    w, h = img.size
+    m = max(w, h)
+    if m > max_px:
+        scale = max_px / float(m)
+        img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+
+    if img.mode not in ("RGB", "RGBA"):
+        img = img.convert("RGBA")
+
+    out = BytesIO()
+    img.save(out, format="PNG", optimize=True)
+    return out.getvalue()
+
+
+def _make_thumb_contain(img_bytes: bytes, *, box: int = THUMB_BOX, quality: int = 82) -> Optional[bytes]:
+    """
+    thumb سبک و سریع: مربع contain + پس‌زمینه ثابت
+    """
+    try:
+        img = Image.open(BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        img.thumbnail((box, box), Image.Resampling.LANCZOS)
+
+        bg = Image.new("RGB", (box, box), (32, 32, 36))
+        w, h = img.size
+        bg.paste(img, ((box - w) // 2, (box - h) // 2))
+
+        out = BytesIO()
+        bg.save(out, format="JPEG", quality=quality, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+def _make_hover_hd(img_bytes: bytes, *, max_px: int = HOVER_HD_MAXPX, quality: int = HOVER_HD_QUALITY) -> Optional[bytes]:
+    try:
+        img = Image.open(BytesIO(img_bytes))
+        img = ImageOps.exif_transpose(img).convert("RGB")
+        w, h = img.size
+        m = max(w, h)
+        if m > max_px:
+            scale = max_px / float(m)
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.LANCZOS)
+        out = BytesIO()
+        img.save(out, format="JPEG", quality=quality, optimize=True)
+        return out.getvalue()
+    except Exception:
+        return None
+
+
+@st.cache_data(show_spinner=False, max_entries=8192)
+def _b64_bytes(data: bytes) -> str:
+    return base64.b64encode(data).decode("utf-8")
+
+
+def _card_html_with_hover(thumb_bytes: Optional[bytes], hd_bytes: Optional[bytes], caption: str) -> str:
+    cap = _s(caption)
+    if not thumb_bytes:
+        return f"<div class='t6-card'><div class='t6-imgbox'></div><div class='t6-cap'>{cap}</div></div>"
+
+    b64t = _b64_bytes(thumb_bytes)
+    thumb_tag = f"<img class='t6-thumb' loading='lazy' src='data:image/jpeg;base64,{b64t}'/>"
+
+    hd_tag = ""
+    if hd_bytes:
+        b64h = _b64_bytes(hd_bytes)
+        hd_tag = f"<img class='t6-hd' loading='lazy' src='data:image/jpeg;base64,{b64h}'/>"
+
+    return (
+        "<div class='t6-card'>"
+        f"  <div class='t6-imgbox'>{thumb_tag}{hd_tag}</div>"
+        f"  <div class='t6-cap'>{cap}</div>"
+        "</div>"
+    )
+
+
+# =============================================================================
+# TTL fetch cache wrapper (critical for Streamlit Cloud speed)
+# =============================================================================
+def _fetch_image_cached(
+    url: str,
+    *,
+    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+) -> Tuple[bool, Optional[bytes], str]:
+    url = _s(url)
+    if not url:
+        return False, None, "Empty URL"
+
+    ss = st.session_state
+    cache: Dict[str, Dict[str, Any]] = ss.get(SS_IMG_CACHE, {}) or {}
+    cfg = ss.get(
+        SS_IMG_CACHE_CFG,
+        {"ttl_ok": IMG_TTL_OK, "ttl_fail": IMG_TTL_FAIL, "max_items": IMG_CACHE_MAX_ITEMS, "max_mb": IMG_MAX_MB},
+    )
+
+    ttl_ok = int(cfg.get("ttl_ok", IMG_TTL_OK))
+    ttl_fail = int(cfg.get("ttl_fail", IMG_TTL_FAIL))
+    max_items = int(cfg.get("max_items", IMG_CACHE_MAX_ITEMS))
+    max_mb = int(cfg.get("max_mb", IMG_MAX_MB))
+
+    now = time.time()
+    hit = cache.get(url)
+    if isinstance(hit, dict):
+        ts = float(hit.get("ts") or 0.0)
+        ok = bool(hit.get("ok"))
+        age = now - ts
+        if ok and age < ttl_ok:
+            b = hit.get("bytes")
+            return True, (bytes(b) if isinstance(b, (bytes, bytearray)) else None), _s(hit.get("msg") or "OK")
+        if (not ok) and age < ttl_fail:
+            return False, None, _s(hit.get("msg") or "Recently failed")
+
+    # LRU-ish trim
+    if len(cache) > max_items:
+        items = sorted(cache.items(), key=lambda kv: float((kv[1] or {}).get("ts") or 0.0))
+        drop_n = max(1, int(len(items) * 0.25))
+        for k, _ in items[:drop_n]:
+            cache.pop(k, None)
+
+    ok, b, msg = fetch_image(url)
+    if ok and b:
+        if len(b) > max_mb * 1024 * 1024:
+            cache[url] = {"ts": now, "ok": False, "bytes": None, "msg": f"Image too large (> {max_mb}MB)"}
+            ss[SS_IMG_CACHE] = cache
+            return False, None, f"Image too large (> {max_mb}MB)"
+        cache[url] = {"ts": now, "ok": True, "bytes": b, "msg": "OK"}
+        ss[SS_IMG_CACHE] = cache
+        return True, b, "OK"
+
+    cache[url] = {"ts": now, "ok": False, "bytes": None, "msg": _s(msg) or "Fetch failed"}
+    ss[SS_IMG_CACHE] = cache
+    return False, None, _s(msg) or "Fetch failed"
+
+
+def ensure_full_image_bytes(
+    url: str,
+    *,
+    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+) -> None:
+    url = _s(url)
+    if not url:
+        return
+    pb: Dict[str, bytes] = st.session_state.get(SS_PHOTO_BYTES, {}) or {}
+    if url in pb and pb[url]:
+        return
+
+    ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+    if ok and b:
+        pb[url] = b
+        st.session_state[SS_PHOTO_BYTES] = pb
+
+
+def cache_thumbnail_only(
+    url: str,
+    *,
+    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+) -> None:
+    url = _s(url)
+    if not url:
+        return
+
+    ss = st.session_state
+    thumbs_local: Dict[str, bytes] = ss.get(SS_COVER_THUMBS, {}) or {}
+    thumbs_global: Dict[str, bytes] = ss.get(SS_PHOTO_THUMBS, {}) or {}
+
+    if (url in thumbs_local and thumbs_local[url]) or (url in thumbs_global and thumbs_global[url]):
+        if url not in thumbs_local and url in thumbs_global:
+            thumbs_local[url] = thumbs_global[url]
+            ss[SS_COVER_THUMBS] = thumbs_local
+        return
+
+    pb: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
+    src = pb.get(url)
+
+    if not src:
+        ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+        if not (ok and b):
+            return
+        src = b
+
+    th = _make_thumb_contain(src, box=THUMB_BOX, quality=82)
+    if th:
+        thumbs_local[url] = th
+        thumbs_global[url] = th
+        ss[SS_COVER_THUMBS] = thumbs_local
+        ss[SS_PHOTO_THUMBS] = thumbs_global
+
+
+def _thumb_and_optional_hd(
+    url: str,
+    *,
+    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+    want_hd: bool,
+) -> Tuple[Optional[bytes], Optional[bytes]]:
+    ss = st.session_state
+    tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(url) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(url)
+
+    if not tb:
+        cache_thumbnail_only(url, fetch_image=fetch_image)
+        tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(url) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(url)
+
+    hd = None
+    if want_hd:
+        pb: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
+        src = pb.get(url)
+        if not src:
+            ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+            if ok and b:
+                src = b
+        if src:
+            hd = _make_hover_hd(src)
+
+    return tb, hd
+
+
+# =============================================================================
+# Date formatting
 # =============================================================================
 def _parse_iso_like_date(value: Any) -> Optional[datetime]:
     text = _s(value)
@@ -327,6 +483,9 @@ def _format_visit_date(raw_date: Any, date_format: str) -> str:
         return dt.strftime("%d/%b/%Y")
 
 
+# =============================================================================
+# Cover defaults
+# =============================================================================
 def _build_cover_defaults(ctx: Tool6Context) -> Dict[str, str]:
     row = getattr(ctx, "row", {}) or {}
     defaults = getattr(ctx, "defaults", {}) or {}
@@ -366,46 +525,50 @@ def _build_cover_defaults(ctx: Tool6Context) -> Dict[str, str]:
 
 
 # =============================================================================
+# Public API helpers
+# =============================================================================
+def resolve_cover_bytes() -> Optional[bytes]:
+    b = st.session_state.get(SS_COVER_BYTES)
+    if isinstance(b, (bytes, bytearray)) and b:
+        return bytes(b)
+
+    for k in ("cover_bytes", SS_COVER_UPLOAD_BYTES):
+        bb = st.session_state.get(k)
+        if isinstance(bb, (bytes, bytearray)) and bb:
+            return bytes(bb)
+
+    pb = st.session_state.get(SS_PHOTO_BYTES)
+    cu = st.session_state.get(SS_COVER_URL)
+    if isinstance(pb, dict) and cu and cu in pb and pb[cu]:
+        if isinstance(pb[cu], (bytes, bytearray)):
+            return bytes(pb[cu])
+
+    return None
+
+
+# =============================================================================
 # HARD hide/cleanup: keep only cover
 # =============================================================================
 def _keep_only_cover(*, cover_url: str, cover_bytes: Optional[bytes]) -> None:
-    """
-    ✅ After selecting cover:
-      - show ONLY that image (others hide)
-      - keep caches ONLY for cover (speed)
-    """
     ss = st.session_state
+    cover_url = _s(cover_url)
 
-    ss[SS_COVER_URL] = _s(cover_url)
+    ss[SS_COVER_URL] = cover_url
     if cover_bytes:
         ss[SS_COVER_BYTES] = bytes(cover_bytes)
-        ss["cover_bytes"] = bytes(cover_bytes)  # legacy compatible
-    else:
-        ss[SS_COVER_BYTES] = ss.get(SS_COVER_BYTES)
+        ss["cover_bytes"] = bytes(cover_bytes)
 
-    # thumbs: keep only cover
     tl = ss.get(SS_COVER_THUMBS) or {}
-    if isinstance(tl, dict) and cover_url in tl:
-        ss[SS_COVER_THUMBS] = {cover_url: tl[cover_url]}
-    else:
-        ss[SS_COVER_THUMBS] = {}
+    ss[SS_COVER_THUMBS] = {cover_url: tl[cover_url]} if isinstance(tl, dict) and cover_url in tl else {}
 
     tg = ss.get(SS_PHOTO_THUMBS) or {}
-    if isinstance(tg, dict) and cover_url in tg:
-        ss[SS_PHOTO_THUMBS] = {cover_url: tg[cover_url]}
-    else:
-        ss[SS_PHOTO_THUMBS] = {}
+    ss[SS_PHOTO_THUMBS] = {cover_url: tg[cover_url]} if isinstance(tg, dict) and cover_url in tg else {}
 
-    # full bytes: keep only cover
     pb = ss.get(SS_PHOTO_BYTES) or {}
-    if isinstance(pb, dict) and cover_url and cover_url in pb:
-        ss[SS_PHOTO_BYTES] = {cover_url: pb[cover_url]}
-    else:
-        ss[SS_PHOTO_BYTES] = {}
+    ss[SS_PHOTO_BYTES] = {cover_url: pb[cover_url]} if isinstance(pb, dict) and cover_url in pb else {}
 
-    # remove any other selections/maps if you had them (safe)
-    # (we don't require them for cover)
-    # you can add more cleanup keys if your project has more caches.
+    imgc = ss.get(SS_IMG_CACHE) or {}
+    ss[SS_IMG_CACHE] = {cover_url: imgc[cover_url]} if isinstance(imgc, dict) and cover_url in imgc else {}
 
 
 # =============================================================================
@@ -418,7 +581,6 @@ def _ensure_state(ctx: Tool6Context) -> None:
     if SS_COVER_OVERRIDES not in ss or not isinstance(ss[SS_COVER_OVERRIDES], dict):
         ss[SS_COVER_OVERRIDES] = _build_cover_defaults(ctx)
     else:
-        # don't overwrite user edits; only set missing keys
         fresh = _build_cover_defaults(ctx)
         cur = ss[SS_COVER_OVERRIDES]
         for k, v in fresh.items():
@@ -443,9 +605,55 @@ def _ensure_state(ctx: Tool6Context) -> None:
 
     ss.setdefault(SS_COVER_UPLOAD_BYTES, None)
 
+    ss.setdefault(SS_IMG_CACHE, {})
+    if not isinstance(ss[SS_IMG_CACHE], dict):
+        ss[SS_IMG_CACHE] = {}
+
+    ss.setdefault(
+        SS_IMG_CACHE_CFG,
+        {"ttl_ok": IMG_TTL_OK, "ttl_fail": IMG_TTL_FAIL, "max_items": IMG_CACHE_MAX_ITEMS, "max_mb": IMG_MAX_MB},
+    )
+
 
 # =============================================================================
-# Picker (independent)
+# Instant cover-table save (no form submit)
+# =============================================================================
+def _set_cover_field(field: str, widget_key: str) -> None:
+    ss = st.session_state
+    table = ss.get(SS_COVER_OVERRIDES, {}) or {}
+    if not isinstance(table, dict):
+        table = {}
+    table[field] = _s(ss.get(widget_key))
+    ss[SS_COVER_OVERRIDES] = table
+
+
+def _apply_date_format_from_ctx(ctx: Tool6Context) -> None:
+    ss = st.session_state
+    fmt = _s(ss.get(SS_COVER_DATE_FMT, "%d/%b/%Y")) or "%d/%b/%Y"
+    row = getattr(ctx, "row", {}) or {}
+    start_time = row.get("starttime")
+    if not start_time:
+        return
+
+    table = ss.get(SS_COVER_OVERRIDES, {}) or {}
+    if not isinstance(table, dict):
+        table = {}
+
+    table["Date of Visit"] = _format_visit_date(start_time, fmt)
+    ss[SS_COVER_OVERRIDES] = table
+
+
+def _on_date_fmt_change(ctx: Tool6Context) -> None:
+    ss = st.session_state
+    fmt_map = dict(DATE_FORMATS)
+    picked_label = _s(ss.get(W_DATE_FMT_LABEL))
+    if picked_label and picked_label in fmt_map:
+        ss[SS_COVER_DATE_FMT] = fmt_map[picked_label]
+    _apply_date_format_from_ctx(ctx)
+
+
+# =============================================================================
+# Picker (FAST + EXACT 2-up layout like your screenshot)
 # =============================================================================
 def _render_picker(
     *,
@@ -460,19 +668,21 @@ def _render_picker(
     def lab(u: str) -> str:
         return _s(labels.get(u, u))
 
-    # If locked -> show ONLY cover, hide all else
+    # Locked => show ONLY cover
     if locked and (cover_url or resolve_cover_bytes()):
         st.markdown("<div class='t6-box'>", unsafe_allow_html=True)
         st.markdown("**Selected Cover (only this image is kept)**")
 
-        # If cover was uploaded (no URL)
         if not cover_url and resolve_cover_bytes():
             st.image(resolve_cover_bytes(), use_container_width=True)
         else:
             cache_thumbnail_only(cover_url, fetch_image=fetch_image)
             tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(cover_url) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(cover_url)
             if tb:
-                render_thumbnail(tb, lab(cover_url))
+                ensure_full_image_bytes(cover_url, fetch_image=fetch_image)
+                src = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(cover_url)
+                hd = _make_hover_hd(src) if src else None
+                st.markdown(_card_html_with_hover(tb, hd, lab(cover_url)), unsafe_allow_html=True)
             else:
                 st.write(lab(cover_url))
 
@@ -483,10 +693,10 @@ def _render_picker(
                 ss[SS_COVER_URL] = ""
                 ss[SS_COVER_BYTES] = None
                 ss[SS_COVER_UPLOAD_BYTES] = None
-                # do not keep caches
                 ss[SS_COVER_THUMBS] = {}
                 ss[SS_PHOTO_THUMBS] = {}
                 ss[SS_PHOTO_BYTES] = {}
+                ss[SS_IMG_CACHE] = {}
                 st.rerun()
         with c2:
             if st.button("Clear cover", use_container_width=True, key=_key("clr_cover")):
@@ -497,18 +707,19 @@ def _render_picker(
                 ss[SS_COVER_THUMBS] = {}
                 ss[SS_PHOTO_THUMBS] = {}
                 ss[SS_PHOTO_BYTES] = {}
+                ss[SS_IMG_CACHE] = {}
                 st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    # Not locked => show gallery (fast)
+    # Not locked => show gallery
     q = st.text_input(
         "Search photos",
         value=_s(ss.get(SS_COVER_PICK_SEARCH, "")),
         placeholder="Search by name…",
         label_visibility="collapsed",
-        key=_key("search"),
+        key=W_SEARCH,
     ).strip().lower()
     ss[SS_COVER_PICK_SEARCH] = q
 
@@ -529,7 +740,7 @@ def _render_picker(
             value=int(ss.get(SS_COVER_PICK_PAGE, 1) or 1),
             step=1,
             label_visibility="collapsed",
-            key=_key("page"),
+            key=W_PAGE,
         )
         ss[SS_COVER_PICK_PAGE] = int(page)
     with p2:
@@ -543,124 +754,138 @@ def _render_picker(
     start = (int(page) - 1) * PER_PAGE
     chunk = filtered[start : start + PER_PAGE]
 
-    # preload thumbs only for visible page (FAST)
+    # ✅ preload thumbs only for visible page (fast)
     for u in chunk:
         cache_thumbnail_only(u, fetch_image=fetch_image)
 
-    thumbs = ss.get(SS_COVER_THUMBS, {}) or {}
+    # ✅ HD only for first N visible items
+    hd_set = set(chunk[: min(HD_BUDGET, len(chunk))])
 
-    st.markdown("<div class='t6-grid'>", unsafe_allow_html=True)
-    for u in chunk:
-        tb = thumbs.get(u)
-        cap = lab(u)
+    # ✅ EXACT 2-up layout like screenshot: use st.columns(2)
+    for i in range(0, len(chunk), GRID_COLS):
+        row = chunk[i : i + GRID_COLS]
+        cols = st.columns(GRID_COLS, gap="medium")
 
-        st.markdown("<div>", unsafe_allow_html=True)
-        if tb:
-            st.markdown(_thumb_card_html(tb, cap), unsafe_allow_html=True)
-        else:
-            st.markdown(f"<div class='t6-thumb-card'><div class='t6-thumb-cap'>{cap}</div></div>", unsafe_allow_html=True)
+        for col, u in zip(cols, row):
+            with col:
+                tb, hd = _thumb_and_optional_hd(u, fetch_image=fetch_image, want_hd=(u in hd_set))
+                st.markdown(_card_html_with_hover(tb, hd, lab(u)), unsafe_allow_html=True)
 
-        st.markdown("<div class='t6-btn-row'>", unsafe_allow_html=True)
-        if st.button("Select as cover", use_container_width=True, key=_key("sel", u)):
-            ensure_full_image_bytes(u, fetch_image=fetch_image)
-            b = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(u)
+                st.markdown("<div class='t6-btn-wrap'>", unsafe_allow_html=True)
+                if st.button("Select", use_container_width=True, key=_key("sel", u)):
+                    ensure_full_image_bytes(u, fetch_image=fetch_image)
+                    b = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(u)
 
-            ss[SS_COVER_UPLOAD_BYTES] = None
-            ss[SS_COVER_PICK_LOCKED] = True
+                    ss[SS_COVER_UPLOAD_BYTES] = None
+                    ss[SS_COVER_PICK_LOCKED] = True
 
-            _keep_only_cover(cover_url=u, cover_bytes=b)
-            st.rerun()
-        st.markdown("</div>", unsafe_allow_html=True)
-
-        st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown("</div>", unsafe_allow_html=True)
+                    _keep_only_cover(cover_url=u, cover_bytes=b)
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _thumb_card_html(thumb_bytes: bytes, caption: str) -> str:
-    b64 = base64.b64encode(thumb_bytes).decode("utf-8")
-    cap = _s(caption)
-    return (
-        "<div class='t6-thumb-card'>"
-        f"<img src='data:image/jpeg;base64,{b64}'/>"
-        f"<div class='t6-thumb-cap'>{cap}</div>"
-        "</div>"
+# =============================================================================
+# Panels (fragmented so form edits don't rerender heavy gallery)
+# =============================================================================
+@st.fragment
+def _images_panel(ctx: Tool6Context, fetch_image) -> None:
+    st.markdown("### Available Images")
+    all_urls = getattr(ctx, "all_photo_urls", []) or []
+    labels = getattr(ctx, "photo_label_by_url", {}) or {}
+    imgs = _only_images(all_urls, labels)
+
+    if not imgs and not resolve_cover_bytes():
+        st.warning("No suitable images found for this report.")
+    else:
+        _render_picker(urls=imgs, labels=labels, fetch_image=fetch_image)
+
+
+@st.fragment
+def _upload_panel() -> None:
+    st.markdown("### Upload Custom Image")
+    file = st.file_uploader(
+        "Choose file",
+        type=["jpg", "jpeg", "png"],
+        label_visibility="collapsed",
+        key=W_UPLOAD,
     )
+    if file:
+        raw = file.read()
+        try:
+            processed = _to_clean_png_bytes(raw)
+        except Exception:
+            processed = raw
+
+        ss = st.session_state
+        ss[SS_COVER_UPLOAD_BYTES] = processed
+        ss[SS_COVER_BYTES] = processed
+        ss["cover_bytes"] = processed
+        ss[SS_COVER_URL] = ""
+        ss[SS_COVER_PICK_LOCKED] = True
+
+        # keep only uploaded cover
+        ss[SS_COVER_THUMBS] = {}
+        ss[SS_PHOTO_THUMBS] = {}
+        ss[SS_PHOTO_BYTES] = {}
+        ss[SS_IMG_CACHE] = {}
+
+        st.image(processed, use_container_width=True, caption="Uploaded cover")
+        st.success("Custom cover uploaded and selected.")
+        st.rerun()
 
 
 # =============================================================================
 # Main render
 # =============================================================================
-def render_step(ctx: Tool6Context, *, fetch_image) -> bool:
+def render_step(
+    ctx: Tool6Context,
+    *,
+    fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
+) -> bool:
     """
-    ✅ Independent Step 1:
-      - user selects ONE cover
-      - all other photos hide + caches cleaned for maximum speed
-      - Step10 can call resolve_cover_bytes()
+    Step 1 (FAST):
+      - ✅ 2 ستون دقیقاً مثل اسکرین‌شات
+      - ✅ کارت مربع واقعی
+      - ✅ TTL fetch cache
+      - ✅ فقط thumbهای صفحه فعلی
+      - ✅ HD محدود برای سرعت
+      - ✅ st.fragment برای جلوگیری از rerun سنگین
     """
     _ensure_state(ctx)
     _inject_css()
 
-    ss = st.session_state
-    cover_table: Dict[str, str] = ss.get(SS_COVER_OVERRIDES, {}) or {}
-
-    left, right = st.columns([5, 4], gap="large")
-
+    left, right = st.columns([4, 4], gap="large")
     with left:
-        st.markdown("### Available Images")
-        all_urls = getattr(ctx, "all_photo_urls", []) or []
-        labels = getattr(ctx, "photo_label_by_url", {}) or {}
-        imgs = _only_images(all_urls, labels)
-
-        if not imgs and not resolve_cover_bytes():
-            st.warning("No suitable images found for this report.")
-        else:
-            _render_picker(urls=imgs, labels=labels, fetch_image=fetch_image)
-
+        _images_panel(ctx, fetch_image)
     with right:
-        st.markdown("### Upload Custom Image")
-        file = st.file_uploader(
-            "Choose file",
-            type=["jpg", "jpeg", "png"],
-            label_visibility="collapsed",
-            key=_key("upload"),
-        )
-        if file:
-            raw = file.read()
-            try:
-                processed = _to_clean_png_bytes(raw)
-            except Exception:
-                processed = raw
-
-            ss[SS_COVER_UPLOAD_BYTES] = processed
-            ss[SS_COVER_BYTES] = processed
-            ss["cover_bytes"] = processed  # legacy
-            ss[SS_COVER_URL] = ""
-            ss[SS_COVER_PICK_LOCKED] = True
-
-            # hide/clean everything else (keep only uploaded cover)
-            ss[SS_COVER_THUMBS] = {}
-            ss[SS_PHOTO_THUMBS] = {}
-            ss[SS_PHOTO_BYTES] = {}
-            st.image(processed, use_container_width=True, caption="Uploaded cover")
-            st.success("Custom cover uploaded and selected.")
-            st.rerun()
+        _upload_panel()
 
     st.divider()
     st.subheader("Cover Page Details")
 
-    # Date format
+    # --- Date format ---
     fmt_labels = [x for x, _ in DATE_FORMATS]
-    fmt_map = dict(DATE_FORMATS)
-    cur_fmt = _s(ss.get(SS_COVER_DATE_FMT, "%d/%b/%Y")) or "%d/%b/%Y"
+    cur_fmt = _s(st.session_state.get(SS_COVER_DATE_FMT, "%d/%b/%Y")) or "%d/%b/%Y"
     idx = next((i for i, (_, f) in enumerate(DATE_FORMATS) if f == cur_fmt), 0)
 
-    chosen = st.selectbox("Date of Visit format", fmt_labels, index=idx, key=_key("date_fmt"))
-    ss[SS_COVER_DATE_FMT] = fmt_map[chosen]
+    if W_DATE_FMT_LABEL not in st.session_state:
+        st.session_state[W_DATE_FMT_LABEL] = fmt_labels[idx]
 
-    if start_time := (getattr(ctx, "row", {}) or {}).get("starttime"):
-        cover_table["Date of Visit"] = _format_visit_date(start_time, ss[SS_COVER_DATE_FMT])
+    st.selectbox(
+        "Date of Visit format",
+        fmt_labels,
+        index=fmt_labels.index(st.session_state[W_DATE_FMT_LABEL])
+        if st.session_state[W_DATE_FMT_LABEL] in fmt_labels
+        else idx,
+        key=W_DATE_FMT_LABEL,
+        on_change=_on_date_fmt_change,
+        kwargs={"ctx": ctx},
+    )
+    _apply_date_format_from_ctx(ctx)
 
-    edit = st.toggle("Edit cover details", value=False, key=_key("edit"))
+    cover_table: Dict[str, str] = st.session_state.get(SS_COVER_OVERRIDES, {}) or {}
+
+    edit = st.toggle("Edit cover details", value=bool(st.session_state.get(W_EDIT_TOGGLE, False)), key=W_EDIT_TOGGLE)
 
     if not edit:
         st.markdown("<div class='t6-box'>", unsafe_allow_html=True)
@@ -669,23 +894,41 @@ def render_step(ctx: Tool6Context, *, fetch_image) -> bool:
             st.markdown(f"**{label}** {val or '—'}")
         st.markdown("</div>", unsafe_allow_html=True)
     else:
-        with st.form("cover_form"):
-            a, b = st.columns(2, gap="large")
-            with a:
-                cover_table["Project Title"] = st.text_area("Project Title", value=_s(cover_table.get("Project Title")), height=80)
-                cover_table["Visit No."] = st.text_input("Visit No.", value=_s(cover_table.get("Visit No.")))
-                cover_table["Type of Intervention"] = st.text_input("Type of Intervention", value=_s(cover_table.get("Type of Intervention")))
-                cover_table["Date of Visit"] = st.text_input("Date of Visit", value=_s(cover_table.get("Date of Visit")))
-            with b:
-                cover_table["Province / District / Village"] = st.text_area("Province / District / Village", value=_s(cover_table.get("Province / District / Village")), height=80)
-                cover_table["Implementing Partner (IP)"] = st.text_area("Implementing Partner (IP)", value=_s(cover_table.get("Implementing Partner (IP)")), height=80)
-                cover_table["Prepared by"] = st.text_input("Prepared by", value=_s(cover_table.get("Prepared by")) or DEFAULT_PREPARED_BY)
-                cover_table["Prepared for"] = st.text_input("Prepared for", value=_s(cover_table.get("Prepared for")) or DEFAULT_PREPARED_FOR)
+        a, b = st.columns(2, gap="large")
 
-            if st.form_submit_button("Save Changes", use_container_width=True):
-                ss[SS_COVER_OVERRIDES] = dict(cover_table)
-                st.success("Cover details saved.")
-                st.rerun()
+        def inp_text(field: str, value: str) -> None:
+            k = _key("f", field)
+            st.text_input(
+                field,
+                value=value,
+                key=k,
+                on_change=_set_cover_field,
+                kwargs={"field": field, "widget_key": k},
+            )
 
-    # ✅ only true when cover exists
+        def inp_area(field: str, value: str, h: int = 80) -> None:
+            k = _key("f", field)
+            st.text_area(
+                field,
+                value=value,
+                height=h,
+                key=k,
+                on_change=_set_cover_field,
+                kwargs={"field": field, "widget_key": k},
+            )
+
+        with a:
+            inp_area("Project Title", _s(cover_table.get("Project Title")), 80)
+            inp_text("Visit No.", _s(cover_table.get("Visit No.")))
+            inp_text("Type of Intervention", _s(cover_table.get("Type of Intervention")))
+            inp_text("Date of Visit", _s(cover_table.get("Date of Visit")))
+
+        with b:
+            inp_area("Province / District / Village", _s(cover_table.get("Province / District / Village")), 80)
+            inp_area("Implementing Partner (IP)", _s(cover_table.get("Implementing Partner (IP)")), 80)
+            inp_text("Prepared by", _s(cover_table.get("Prepared by")) or DEFAULT_PREPARED_BY)
+            inp_text("Prepared for", _s(cover_table.get("Prepared for")) or DEFAULT_PREPARED_FOR)
+
+        st.caption("✅ Changes are saved instantly (no Save button needed).")
+
     return bool(resolve_cover_bytes())
