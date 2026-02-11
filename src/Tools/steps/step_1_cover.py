@@ -37,6 +37,9 @@ SS_COVER_DATE_FMT = "cover_date_format"
 SS_IMG_CACHE = "tool6_cover_img_cache"      # {url: {"ts": float, "ok": bool, "bytes": b, "msg": str}}
 SS_IMG_CACHE_CFG = "tool6_cover_img_cache_cfg"
 
+# Debug stats (Cloud troubleshooting)
+SS_COVER_DEBUG = "tool6_cover_debug"        # {url: msg}
+
 # Widget keys
 W_DATE_FMT_LABEL = "t6_date_fmt_label"
 W_EDIT_TOGGLE = "t6_cover_edit_toggle"
@@ -48,12 +51,12 @@ W_UPLOAD = "t6_cover_upload"
 # =============================================================================
 # UI constants
 # =============================================================================
-GRID_COLS = 2               # ✅ ثابت: دو ستون کنار هم
-PER_PAGE = 12               # ✅ برای سرعت در Cloud پایین نگه دارید
-THUMB_BOX = 200             # ✅ کمی کوچک‌تر از قبل (220) برای نمایش خردتر
+GRID_COLS = 2
+PER_PAGE = 12
+THUMB_BOX = 200
 
 # Hover HD tuning (performance)
-HOVER_HD_MAXPX = 1600       # کمی کمتر => سریع‌تر
+HOVER_HD_MAXPX = 1600
 HOVER_HD_QUALITY = 85
 
 # Cache / limits
@@ -62,7 +65,6 @@ IMG_TTL_FAIL = 90
 IMG_CACHE_MAX_ITEMS = 600
 IMG_MAX_MB = 25
 
-# Adaptive HD budget (per visible page) - برای سرعت Cloud بهتره کم باشه
 HD_BUDGET = 24
 
 
@@ -116,6 +118,15 @@ def _key(*parts: Any) -> str:
     return hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
 
+def _debug_note(url: str, msg: str) -> None:
+    ss = st.session_state
+    dbg = ss.get(SS_COVER_DEBUG, {}) or {}
+    if not isinstance(dbg, dict):
+        dbg = {}
+    dbg[_s(url)] = _s(msg)
+    ss[SS_COVER_DEBUG] = dbg
+
+
 def _is_likely_image(url: str, label: str = "") -> bool:
     u = _s(url).lower()
     if not u:
@@ -124,6 +135,7 @@ def _is_likely_image(url: str, label: str = "") -> bool:
         return False
     if IMG_EXT_PATTERN.search(u):
         return True
+    # common image CDNs
     if "googleusercontent.com" in u or "lh3.googleusercontent.com" in u:
         return True
     lbl = _s(label).lower()
@@ -164,7 +176,6 @@ def _inject_css() -> None:
     background: rgba(255,255,255,0.02);
   }}
 
-  /* ✅ مربع واقعی */
   .t6-imgbox {{
     width: 100%;
     aspect-ratio: 1 / 1;
@@ -212,7 +223,7 @@ def _inject_css() -> None:
     font-size: 11px;
     opacity: .86;
     line-height: 1.25;
-    min-height: 34px;    /* ✅ هم‌تراز شدن کپشن‌ها */
+    min-height: 34px;
     word-break: break-word;
     text-align: right;
   }}
@@ -258,6 +269,8 @@ def _to_clean_png_bytes(raw: bytes, *, max_px: int = 2600) -> bytes:
 def _make_thumb_contain(img_bytes: bytes, *, box: int = THUMB_BOX, quality: int = 82) -> Optional[bytes]:
     """
     thumb سبک و سریع: مربع contain + پس‌زمینه ثابت
+    NOTE: On Streamlit Cloud, Pillow may not support WEBP depending on build.
+          If Image.open fails, we return None and UI will fallback to direct URL rendering.
     """
     try:
         img = Image.open(BytesIO(img_bytes))
@@ -271,7 +284,7 @@ def _make_thumb_contain(img_bytes: bytes, *, box: int = THUMB_BOX, quality: int 
         out = BytesIO()
         bg.save(out, format="JPEG", quality=quality, optimize=True)
         return out.getvalue()
-    except Exception:
+    except Exception as e:
         return None
 
 
@@ -296,10 +309,33 @@ def _b64_bytes(data: bytes) -> str:
     return base64.b64encode(data).decode("utf-8")
 
 
-def _card_html_with_hover(thumb_bytes: Optional[bytes], hd_bytes: Optional[bytes], caption: str) -> str:
+def _card_html_with_hover(
+    *,
+    url: str,
+    thumb_bytes: Optional[bytes],
+    hd_bytes: Optional[bytes],
+    caption: str,
+) -> str:
+    """
+    Cloud-safe rendering:
+    - Primary: base64 thumbnail (fast, consistent).
+    - Fallback: if thumbnail creation fails, render direct URL in <img src="...">.
+      This avoids Pillow format limitations (e.g., WEBP) and still shows images.
+    """
     cap = _s(caption)
+    u = _s(url)
+
+    # Fallback to direct URL (no PIL dependency)
     if not thumb_bytes:
-        return f"<div class='t6-card'><div class='t6-imgbox'></div><div class='t6-cap'>{cap}</div></div>"
+        # referrerpolicy helps with some hosts (Google/CDN)
+        return (
+            "<div class='t6-card'>"
+            "  <div class='t6-imgbox'>"
+            f"    <img class='t6-thumb' loading='lazy' referrerpolicy='no-referrer' src='{u}'/>"
+            "  </div>"
+            f"  <div class='t6-cap'>{cap}</div>"
+            "</div>"
+        )
 
     b64t = _b64_bytes(thumb_bytes)
     thumb_tag = f"<img class='t6-thumb' loading='lazy' src='data:image/jpeg;base64,{b64t}'/>"
@@ -360,12 +396,17 @@ def _fetch_image_cached(
         for k, _ in items[:drop_n]:
             cache.pop(k, None)
 
-    ok, b, msg = fetch_image(url)
+    try:
+        ok, b, msg = fetch_image(url)
+    except Exception as e:
+        ok, b, msg = False, None, f"Fetch exception: {type(e).__name__}: {e}"
+
     if ok and b:
         if len(b) > max_mb * 1024 * 1024:
             cache[url] = {"ts": now, "ok": False, "bytes": None, "msg": f"Image too large (> {max_mb}MB)"}
             ss[SS_IMG_CACHE] = cache
             return False, None, f"Image too large (> {max_mb}MB)"
+
         cache[url] = {"ts": now, "ok": True, "bytes": b, "msg": "OK"}
         ss[SS_IMG_CACHE] = cache
         return True, b, "OK"
@@ -387,10 +428,13 @@ def ensure_full_image_bytes(
     if url in pb and pb[url]:
         return
 
-    ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+    ok, b, msg = _fetch_image_cached(url, fetch_image=fetch_image)
     if ok and b:
         pb[url] = b
         st.session_state[SS_PHOTO_BYTES] = pb
+        _debug_note(url, "OK")
+    else:
+        _debug_note(url, msg)
 
 
 def cache_thumbnail_only(
@@ -416,10 +460,13 @@ def cache_thumbnail_only(
     src = pb.get(url)
 
     if not src:
-        ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+        ok, b, msg = _fetch_image_cached(url, fetch_image=fetch_image)
         if not (ok and b):
+            _debug_note(url, msg)
             return
         src = b
+        pb[url] = b
+        ss[SS_PHOTO_BYTES] = pb
 
     th = _make_thumb_contain(src, box=THUMB_BOX, quality=82)
     if th:
@@ -427,6 +474,10 @@ def cache_thumbnail_only(
         thumbs_global[url] = th
         ss[SS_COVER_THUMBS] = thumbs_local
         ss[SS_PHOTO_THUMBS] = thumbs_global
+        _debug_note(url, "Thumbnail OK")
+    else:
+        # Critical: thumbnail failed (likely unsupported format). UI will fallback to URL render.
+        _debug_note(url, "Thumbnail generation failed (unsupported format or decode error). Using URL fallback.")
 
 
 def _thumb_and_optional_hd(
@@ -447,9 +498,13 @@ def _thumb_and_optional_hd(
         pb: Dict[str, bytes] = ss.get(SS_PHOTO_BYTES, {}) or {}
         src = pb.get(url)
         if not src:
-            ok, b, _ = _fetch_image_cached(url, fetch_image=fetch_image)
+            ok, b, msg = _fetch_image_cached(url, fetch_image=fetch_image)
             if ok and b:
                 src = b
+                pb[url] = b
+                ss[SS_PHOTO_BYTES] = pb
+            else:
+                _debug_note(url, msg)
         if src:
             hd = _make_hover_hd(src)
 
@@ -614,6 +669,10 @@ def _ensure_state(ctx: Tool6Context) -> None:
         {"ttl_ok": IMG_TTL_OK, "ttl_fail": IMG_TTL_FAIL, "max_items": IMG_CACHE_MAX_ITEMS, "max_mb": IMG_MAX_MB},
     )
 
+    ss.setdefault(SS_COVER_DEBUG, {})
+    if not isinstance(ss[SS_COVER_DEBUG], dict):
+        ss[SS_COVER_DEBUG] = {}
+
 
 # =============================================================================
 # Instant cover-table save (no form submit)
@@ -653,7 +712,7 @@ def _on_date_fmt_change(ctx: Tool6Context) -> None:
 
 
 # =============================================================================
-# Picker (FAST + EXACT 2-up layout like your screenshot)
+# Picker
 # =============================================================================
 def _render_picker(
     *,
@@ -678,13 +737,15 @@ def _render_picker(
         else:
             cache_thumbnail_only(cover_url, fetch_image=fetch_image)
             tb = (ss.get(SS_COVER_THUMBS, {}) or {}).get(cover_url) or (ss.get(SS_PHOTO_THUMBS, {}) or {}).get(cover_url)
-            if tb:
-                ensure_full_image_bytes(cover_url, fetch_image=fetch_image)
-                src = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(cover_url)
-                hd = _make_hover_hd(src) if src else None
-                st.markdown(_card_html_with_hover(tb, hd, lab(cover_url)), unsafe_allow_html=True)
-            else:
-                st.write(lab(cover_url))
+
+            ensure_full_image_bytes(cover_url, fetch_image=fetch_image)
+            src = (ss.get(SS_PHOTO_BYTES, {}) or {}).get(cover_url)
+            hd = _make_hover_hd(src) if src else None
+
+            st.markdown(
+                _card_html_with_hover(url=cover_url, thumb_bytes=tb, hd_bytes=hd, caption=lab(cover_url)),
+                unsafe_allow_html=True,
+            )
 
         c1, c2 = st.columns([1, 1], gap="small")
         with c1:
@@ -697,6 +758,7 @@ def _render_picker(
                 ss[SS_PHOTO_THUMBS] = {}
                 ss[SS_PHOTO_BYTES] = {}
                 ss[SS_IMG_CACHE] = {}
+                ss[SS_COVER_DEBUG] = {}
                 st.rerun()
         with c2:
             if st.button("Clear cover", use_container_width=True, key=_key("clr_cover")):
@@ -708,6 +770,7 @@ def _render_picker(
                 ss[SS_PHOTO_THUMBS] = {}
                 ss[SS_PHOTO_BYTES] = {}
                 ss[SS_IMG_CACHE] = {}
+                ss[SS_COVER_DEBUG] = {}
                 st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
@@ -754,14 +817,12 @@ def _render_picker(
     start = (int(page) - 1) * PER_PAGE
     chunk = filtered[start : start + PER_PAGE]
 
-    # ✅ preload thumbs only for visible page (fast)
+    # preload thumbs only for visible page (fast)
     for u in chunk:
         cache_thumbnail_only(u, fetch_image=fetch_image)
 
-    # ✅ HD only for first N visible items
     hd_set = set(chunk[: min(HD_BUDGET, len(chunk))])
 
-    # ✅ EXACT 2-up layout like screenshot: use st.columns(2)
     for i in range(0, len(chunk), GRID_COLS):
         row = chunk[i : i + GRID_COLS]
         cols = st.columns(GRID_COLS, gap="medium")
@@ -769,7 +830,10 @@ def _render_picker(
         for col, u in zip(cols, row):
             with col:
                 tb, hd = _thumb_and_optional_hd(u, fetch_image=fetch_image, want_hd=(u in hd_set))
-                st.markdown(_card_html_with_hover(tb, hd, lab(u)), unsafe_allow_html=True)
+                st.markdown(
+                    _card_html_with_hover(url=u, thumb_bytes=tb, hd_bytes=hd, caption=lab(u)),
+                    unsafe_allow_html=True,
+                )
 
                 st.markdown("<div class='t6-btn-wrap'>", unsafe_allow_html=True)
                 if st.button("Select", use_container_width=True, key=_key("sel", u)):
@@ -796,8 +860,25 @@ def _images_panel(ctx: Tool6Context, fetch_image) -> None:
 
     if not imgs and not resolve_cover_bytes():
         st.warning("No suitable images found for this report.")
-    else:
-        _render_picker(urls=imgs, labels=labels, fetch_image=fetch_image)
+        return
+
+    _render_picker(urls=imgs, labels=labels, fetch_image=fetch_image)
+
+    # Optional debug (only when needed)
+    with st.expander("Troubleshooting (Cloud)", expanded=False):
+        dbg = st.session_state.get(SS_COVER_DEBUG, {}) or {}
+        st.write(
+            "If images do not render, it usually means the fetch failed (403/timeout) "
+            "or thumbnail generation failed (unsupported format like WEBP). "
+            "This build now falls back to URL rendering automatically."
+        )
+        if isinstance(dbg, dict) and dbg:
+            # show only recent-ish items
+            items = list(dbg.items())[:30]
+            for u, m in items:
+                st.code(f"{u}\n{m}", language="text")
+        else:
+            st.info("No debug messages yet.")
 
 
 @st.fragment
@@ -823,11 +904,11 @@ def _upload_panel() -> None:
         ss[SS_COVER_URL] = ""
         ss[SS_COVER_PICK_LOCKED] = True
 
-        # keep only uploaded cover
         ss[SS_COVER_THUMBS] = {}
         ss[SS_PHOTO_THUMBS] = {}
         ss[SS_PHOTO_BYTES] = {}
         ss[SS_IMG_CACHE] = {}
+        ss[SS_COVER_DEBUG] = {}
 
         st.image(processed, use_container_width=True, caption="Uploaded cover")
         st.success("Custom cover uploaded and selected.")
@@ -843,13 +924,14 @@ def render_step(
     fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
 ) -> bool:
     """
-    Step 1 (FAST):
-      - ✅ 2 ستون دقیقاً مثل اسکرین‌شات
-      - ✅ کارت مربع واقعی
-      - ✅ TTL fetch cache
-      - ✅ فقط thumbهای صفحه فعلی
-      - ✅ HD محدود برای سرعت
-      - ✅ st.fragment برای جلوگیری از rerun سنگین
+    Step 1 (Cloud-safe + FAST):
+      - 2 columns exact layout
+      - square cards
+      - TTL fetch cache
+      - thumbnails only for visible page
+      - HD limited
+      - st.fragment to avoid heavy reruns
+      - IMPORTANT: URL fallback rendering when thumbnails fail
     """
     _ensure_state(ctx)
     _inject_css()
@@ -863,7 +945,6 @@ def render_step(
     st.divider()
     st.subheader("Cover Page Details")
 
-    # --- Date format ---
     fmt_labels = [x for x, _ in DATE_FORMATS]
     cur_fmt = _s(st.session_state.get(SS_COVER_DATE_FMT, "%d/%b/%Y")) or "%d/%b/%Y"
     idx = next((i for i, (_, f) in enumerate(DATE_FORMATS) if f == cur_fmt), 0)
