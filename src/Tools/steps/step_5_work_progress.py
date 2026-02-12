@@ -676,7 +676,7 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
             )
 
         with colB:
-            p1, p2 = st.columns([2.0, 1.5], gap="small")
+            p1, p2 = st.columns([1.7, 2.3], gap="small")
             with p1:
                 planned_key = _key("planned", i_global)
                 st.session_state.setdefault(planned_key, float(_safe_float(r.get("Planned"))))
@@ -694,7 +694,7 @@ def _render_row_fragment(i_global: int, *, view_mode: str, collapse_all: bool, a
                 _set_row_field_if_changed(i_global, "Planned Unit", planned_unit)
 
         with colC:
-            a1, a2 = st.columns([2.0, 1.5], gap="small")
+            a1, a2 = st.columns([1.7, 2.3], gap="small")
             with a1:
                 achieved_key = _key("achieved", i_global)
                 st.session_state.setdefault(achieved_key, float(_safe_float(r.get("Achieved"))))
