@@ -127,6 +127,76 @@ def _merge_photo_bytes(*sources: Dict[str, bytes]) -> Dict[str, bytes]:
     return merged
 
 
+def _extract_step4_bytes_maps_from_components(
+    component_observations: List[Dict[str, Any]],
+) -> Tuple[Dict[str, bytes], Dict[str, bytes]]:
+    """
+    ✅ NEW: Extract bytes from Step4 structure as you actually save it:
+      major_table row -> {
+        photos: [url],
+        photo_bytes_list: [bytes],
+        annotated_photo_bytes_list: [bytes]
+      }
+
+    Returns:
+      (original_map, annotated_map)
+      each: Dict[url, bytes]
+    """
+    orig: Dict[str, bytes] = {}
+    ann: Dict[str, bytes] = {}
+
+    for comp in component_observations or []:
+        if not isinstance(comp, dict):
+            continue
+        ov = comp.get("observations_valid") or []
+        if not isinstance(ov, list):
+            continue
+
+        for ob in ov:
+            if not isinstance(ob, dict):
+                continue
+            major = ob.get("major_table") or []
+            if not isinstance(major, list):
+                continue
+
+            for row in major:
+                if not isinstance(row, dict):
+                    continue
+
+                photos = row.get("photos") or []
+                if not isinstance(photos, list) or not photos:
+                    continue
+
+                url = str(photos[0] or "").strip()
+                if not url:
+                    continue
+
+                pbl = row.get("photo_bytes_list") or []
+                if isinstance(pbl, list) and pbl:
+                    b0 = pbl[0]
+                    if isinstance(b0, (bytes, bytearray)) and b0:
+                        orig[url] = bytes(b0)
+
+                abl = row.get("annotated_photo_bytes_list") or []
+                if isinstance(abl, list) and abl:
+                    a0 = abl[0]
+                    if isinstance(a0, (bytes, bytearray)) and a0:
+                        ann[url] = bytes(a0)
+
+    return orig, ann
+
+
+def _get_step4_annotated_from_session() -> Dict[str, bytes]:
+    """
+    ✅ NEW: Step4 stores edited images in session_state["tool6_s4_photo_annotated"] as {url: png_bytes}
+    """
+    try:
+        import streamlit as st
+        return _safe_bytes_dict(st.session_state.get("tool6_s4_photo_annotated") or {})
+    except Exception:
+        return {}
+
+
 def _extract_embedded_photo_bytes_from_components(component_observations: List[Dict[str, Any]]) -> Dict[str, bytes]:
     """
     Extract photo bytes that might be embedded directly in Tool6 structures.
@@ -134,7 +204,7 @@ def _extract_embedded_photo_bytes_from_components(component_observations: List[D
     Supported locations:
       A) Step 3 (recommended):
          comp["observations_valid"][*]["photos"][*] -> {"url": str, "bytes": bytes}
-      B) Step 4:
+      B) (legacy) Step 4 older schema:
          comp["observations_valid"][*]["major_table"][*] -> {"photo": url, "photo_bytes": bytes}
 
     Returns:
@@ -164,7 +234,7 @@ def _extract_embedded_photo_bytes_from_components(component_observations: List[D
                     if url and isinstance(b, (bytes, bytearray)) and b:
                         out[url] = bytes(b)
 
-            # B) Step 4 embedded bytes: major_table[*]["photo_bytes"]
+            # B) legacy Step 4 embedded bytes: major_table[*]["photo_bytes"]
             major = ob.get("major_table") or []
             if isinstance(major, list):
                 for row in major:
@@ -178,22 +248,24 @@ def _extract_embedded_photo_bytes_from_components(component_observations: List[D
     return out
 
 
-def _inject_photo_bytes_into_major_table(
+def _inject_bytes_into_step4_major_table(
     component_observations: List[Dict[str, Any]],
-    photo_bytes: Dict[str, bytes],
+    photo_bytes_by_url: Dict[str, bytes],
+    annotated_by_url: Dict[str, bytes],
 ) -> None:
     """
-    Ensure each major_table row has 'photo_bytes' if 'photo' URL is set.
+    ✅ NEW: Ensure each Step4 major_table row has:
+      - photo_bytes_list (from url) if missing/empty
+      - annotated_photo_bytes_list (from url) if missing/empty
 
     Mutates component_observations in-place.
     """
-    if not component_observations or not isinstance(photo_bytes, dict):
+    if not component_observations:
         return
 
     for comp in component_observations:
         if not isinstance(comp, dict):
             continue
-
         ov = comp.get("observations_valid") or []
         if not isinstance(ov, list):
             continue
@@ -201,7 +273,6 @@ def _inject_photo_bytes_into_major_table(
         for ob in ov:
             if not isinstance(ob, dict):
                 continue
-
             major = ob.get("major_table") or []
             if not isinstance(major, list):
                 continue
@@ -209,13 +280,30 @@ def _inject_photo_bytes_into_major_table(
             for row in major:
                 if not isinstance(row, dict):
                     continue
-                url = str(row.get("photo") or "").strip()
+
+                photos = row.get("photos") or []
+                if not isinstance(photos, list) or not photos:
+                    continue
+
+                url = str(photos[0] or "").strip()
                 if not url:
                     continue
-                if not row.get("photo_bytes"):
-                    b = photo_bytes.get(url)
+
+                # fill photo_bytes_list
+                pbl = row.get("photo_bytes_list")
+                has_pbl = isinstance(pbl, list) and len(pbl) >= 1 and isinstance(pbl[0], (bytes, bytearray)) and pbl[0]
+                if not has_pbl:
+                    b = photo_bytes_by_url.get(url)
                     if isinstance(b, (bytes, bytearray)) and b:
-                        row["photo_bytes"] = bytes(b)
+                        row["photo_bytes_list"] = [bytes(b)]
+
+                # fill annotated_photo_bytes_list
+                abl = row.get("annotated_photo_bytes_list")
+                has_abl = isinstance(abl, list) and len(abl) >= 1 and isinstance(abl[0], (bytes, bytearray)) and abl[0]
+                if not has_abl:
+                    ab = annotated_by_url.get(url)
+                    if isinstance(ab, (bytes, bytearray)) and ab:
+                        row["annotated_photo_bytes_list"] = [bytes(ab)]
 
 
 # =============================================================================
@@ -325,14 +413,6 @@ def _get_summary_findings_payload_fallback(
 ) -> Tuple[List[Dict[str, str]], Dict[int, str], Dict[str, str], bool]:
     """
     Pull Step 8 outputs for Section 6 printing.
-
-    Priority:
-      A) general_info_overrides (if you choose to persist there later)
-      B) Streamlit session_state keys from Step 8:
-         - tool6_summary_findings_extracted
-         - tool6_severity_by_no
-         - tool6_severity_by_finding
-         - tool6_add_legend
     """
     extracted_rows: List[Dict[str, str]] = []
     sev_by_no: Dict[int, str] = {}
@@ -347,7 +427,7 @@ def _get_summary_findings_payload_fallback(
         if "tool6_add_legend" in general_info_overrides:
             add_legend = bool(general_info_overrides.get("tool6_add_legend", True))
 
-    # B) session_state fallback (preferred in your current architecture)
+    # B) session_state fallback
     try:
         import streamlit as st
 
@@ -440,7 +520,6 @@ def _call_compat(fn: Callable, *args, **kwargs):
         sig = inspect.signature(fn)
         accepted = sig.parameters.keys()
         filtered = {k: v for k, v in kwargs.items() if k in accepted}
-        # Keep args but avoid passing too many
         return fn(*args[: len(accepted)], **filtered)
 
 
@@ -491,10 +570,6 @@ def _build_base_doc(
 # Helpers: activity titles extraction (better alignment with Step 3/5)
 # =============================================================================
 def _extract_activity_titles_from_component_observations(component_observations: List[Dict[str, Any]]) -> List[str]:
-    """
-    Prefer extracting titles from observations_valid[*].title (these are the real "activities" titles).
-    Deduplicate while preserving order.
-    """
     titles: List[str] = []
     for comp in component_observations or []:
         if not isinstance(comp, dict):
@@ -509,7 +584,6 @@ def _extract_activity_titles_from_component_observations(component_observations:
             if t:
                 titles.append(t)
 
-    # de-dup keep order
     seen = set()
     out: List[str] = []
     for t in titles:
@@ -569,26 +643,38 @@ def build_tool6_full_report_docx(
     extracted_rows, severity_by_no, severity_by_finding, add_legend = _get_summary_findings_payload_fallback(
         general_info_overrides=general_info_overrides
     )
-    # Optionally persist (helps later sections that rely on overrides)
     general_info_overrides["tool6_summary_findings_extracted"] = extracted_rows
     general_info_overrides["tool6_severity_by_no"] = severity_by_no
     general_info_overrides["tool6_severity_by_finding"] = severity_by_finding
     general_info_overrides["tool6_add_legend"] = bool(add_legend)
 
     # ------------------------------------------------------------------
-    # Photo bytes (robust merge)
+    # ✅ Photos (ROBUST: original + annotated + Step4 structure)
     # ------------------------------------------------------------------
     photo_bytes_in = _safe_bytes_dict(photo_bytes)
+
+    # bytes embedded in Step3 legacy areas
     embedded_bytes = _extract_embedded_photo_bytes_from_components(component_observations)
 
+    # bytes embedded in Step4 (your real schema)
+    step4_orig_map, step4_ann_map = _extract_step4_bytes_maps_from_components(component_observations)
+
+    # session cache: originals
     try:
         import streamlit as st
         cache_bytes = _safe_bytes_dict(st.session_state.get("photo_bytes") or {})
     except Exception:
         cache_bytes = {}
 
-    photo_bytes_final = _merge_photo_bytes(embedded_bytes, photo_bytes_in, cache_bytes)
-    _inject_photo_bytes_into_major_table(component_observations, photo_bytes_final)
+    # session cache: annotated (edited)
+    session_annotated = _get_step4_annotated_from_session()
+
+    # final maps
+    photo_bytes_final = _merge_photo_bytes(embedded_bytes, step4_orig_map, photo_bytes_in, cache_bytes)
+    annotated_final = _merge_photo_bytes(step4_ann_map, session_annotated)
+
+    # inject lists back to major_table rows so report sections can place correct image
+    _inject_bytes_into_step4_major_table(component_observations, photo_bytes_final, annotated_final)
 
     # ------------------------------------------------------------------
     # Base doc
@@ -626,18 +712,22 @@ def build_tool6_full_report_docx(
     )
 
     # ------------------------------------------------------------------
-    # Section 5 — Observations (Major findings + Recommendations inside)
+    # Section 5 — Observations
     # ------------------------------------------------------------------
+    # IMPORTANT:
+    # - component_observations now contains photo_bytes_list + annotated_photo_bytes_list
+    # - photo_bytes_final is still passed for backward compatibility
     _call_compat(
         add_observations_page,
         doc,
         component_observations=component_observations,
         photo_bytes=photo_bytes_final,
-        include_findings_recommendations=True,  # if your observations_page supports it
+        include_findings_recommendations=True,
+        annotated_photo_bytes=annotated_final,  # if your observations_page supports it (safe compat)
     )
 
     # ------------------------------------------------------------------
-    # ✅ Section 6 — Summary of the findings (from Step 8)
+    # Section 6 — Summary of the findings
     # ------------------------------------------------------------------
     add_summary_of_findings_section6 = _import_summary_of_findings_section6()
 
@@ -663,7 +753,4 @@ def build_tool6_full_report_docx(
         section_no=conclusion_section_no,
     )
 
-    # ------------------------------------------------------------------
-    # Finalize
-    # ------------------------------------------------------------------
     return update_docx_fields_bytes(_doc_to_bytes(doc))
