@@ -21,3 +21,5 @@ streamlit-drawable-canvas
 streamlit-js-eval
 streamlit>=1.30
 altair>=5,<6
+pymupdf
+pywin32
