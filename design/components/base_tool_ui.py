@@ -1,263 +1,267 @@
 from __future__ import annotations
+
+import html
 import streamlit as st
 from design import apply_glassmorphism
-import streamlit.components.v1 as components
 
+
+# ----------------------------
+# Helpers
+# ----------------------------
+def _esc(x: str) -> str:
+    return html.escape(x or "")
+
+
+def _inject_component_css() -> None:
+    """
+    Minimal component CSS.
+    IMPORTANT:
+      - Do NOT redefine theme variables here.
+      - Use the tokens already provided by modern_glass.css
+        مثل: --glass-secondary, --glass-tertiary, --border, --border-strong, --text-primary ...
+    """
+    st.markdown(
+        """
+<style id="base-tool-ui-components">
+/* ============================================================
+   Base Tool UI Components (minimal, token-based)
+   ============================================================ */
+
+/* Topbar */
+.bt-topbar{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap: 12px;
+  padding: 0.6rem 0.2rem 0.2rem 0.2rem;
+}
+.bt-topbar__left{
+  min-width: 0;
+}
+.bt-topbar__title{
+  margin: 0;
+  font-size: 1.65rem;
+  font-weight: 820;
+  line-height: 1.15;
+  color: var(--text-primary);
+  letter-spacing: -0.01em;
+}
+.bt-topbar__subtitle{
+  margin: 0.35rem 0 0 0;
+  color: var(--text-secondary);
+  opacity: 0.92;
+  font-size: 0.98rem;
+  line-height: 1.45;
+}
+.bt-topbar__right{
+  flex: 0 0 auto;
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  padding-top: 0.10rem;
+}
+.bt-chip{
+  display:inline-flex;
+  align-items:center;
+  gap: 8px;
+  padding: 0.42rem 0.90rem;
+  border-radius: 999px;
+  background: var(--glass-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 0.90rem;
+  font-weight: 700;
+  box-shadow: var(--shadow-light);
+  backdrop-filter: blur(var(--blur-light)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.2);
+}
+
+/* Modern divider (instead of st.markdown("---")) */
+.bt-divider{
+  height: 1px;
+  width: 100%;
+  margin: 0.85rem 0 1.05rem 0;
+  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+  opacity: 0.9;
+}
+
+/* Status card accent bar */
+.bt-status{
+  position: relative;
+  overflow: hidden;
+}
+.bt-status::before{
+  content: "";
+  position:absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  opacity: 0.95;
+}
+.bt-status--info::before{    background: rgba(33,150,243,0.95); }
+.bt-status--warning::before{ background: rgba(255,152,0,0.95); }
+.bt-status--error::before{   background: rgba(244,67,54,0.95); }
+.bt-status--success::before{ background: rgba(76,175,80,0.95); }
+
+/* Status inner spacing */
+.bt-status__body{
+  padding-left: 0.35rem; /* room for the bar */
+}
+
+/* Card headings inside our cards */
+.bt-card-title{
+  margin: 0 0 0.65rem 0;
+  font-weight: 820;
+  font-size: 1.22rem;
+  line-height: 1.25;
+  color: var(--text-primary);
+}
+.bt-card-subtitle{
+  margin: 0 0 1rem 0;
+  color: var(--text-secondary);
+  opacity: 0.92;
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+.bt-card-text{
+  margin: 0;
+  color: var(--text-secondary);
+  line-height: 1.65;
+}
+
+/* Small spacer after cards (optional) */
+.bt-card-spacer{
+  height: 0.85rem;
+}
+
+/* Ensure markdown blocks don't add huge margins */
+.bt-reset-markdown .stMarkdown,
+.bt-reset-markdown .stCaption{
+  margin-bottom: 0.5rem !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+
+# ----------------------------
+# Public API
+# ----------------------------
 def apply_global_background(*args, **kwargs) -> None:
-    """Apply global background with full theme support"""
+    """
+    Apply global theme + component CSS.
+    - Calls apply_glassmorphism() which sets tokens + html[data-theme]
+    - Injects only minimal component CSS (no theme duplication)
+    """
     apply_glassmorphism()
+    _inject_component_css()
 
-    # Inject custom CSS for theme-aware styling
-    st.markdown("""
-    <style>
-    /* Theme-aware color variables */
-    :root {
-        --background-primary: #FFFFFF;
-        --text-primary: #000000;
-        --card-background: rgba(255, 255, 255, 0.9);
-        --border-color: rgba(0, 0, 0, 0.1);
-        --shadow-color: rgba(0, 0, 0, 0.08);
-    }
-
-    [data-theme="dark"] {
-        --background-primary: #0E1117;
-        --text-primary: #FAFAFA;
-        --card-background: rgba(30, 30, 46, 0.9);
-        --border-color: rgba(255, 255, 255, 0.1);
-        --shadow-color: rgba(0, 0, 0, 0.3);
-    }
-
-    /* Modern card styling */
-    .modern-card {
-        background: var(--card-background);
-        border: 1px solid var(--border-color);
-        border-radius: 12px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        box-shadow: 0 4px 20px var(--shadow-color);
-        backdrop-filter: blur(10px);
-        transition: all 0.3s ease;
-    }
-
-    .modern-card:hover {
-        box-shadow: 0 8px 30px var(--shadow-color);
-        transform: translateY(-2px);
-    }
-
-    /* Ensure proper alignment */
-    .stMarkdown, .stCaption {
-        margin-bottom: 0.5rem !important;
-    }
-
-    .card-content {
-        color: var(--text-primary) !important;
-    }
-
-    /* Light mode specific - ensure bright background */
-    [data-theme="light"] {
-        background-color: #FFFFFF !important;
-    }
-
-    [data-theme="light"] .card-content {
-        color: #000000 !important;
-    }
-
-    [data-theme="light"] .modern-card {
-        background: rgba(255, 255, 255, 0.95);
-    }
-
-    /* Light mode specific - make glass components visible */
-    [data-theme="light"] div[data-baseweb="input"],
-    [data-theme="light"] div[data-baseweb="textarea"],
-    [data-theme="light"] div[data-baseweb="select"],
-    [data-theme="light"] div[data-baseweb="spinner"] {
-        border: 1px solid rgba(0, 0, 0, 0.15) !important;
-        background: rgba(0, 0, 0, 0.03) !important;
-    }
-    [data-theme="light"] div[data-baseweb="input"] input,
-    [data-theme="light"] div[data-baseweb="textarea"] textarea,
-    [data-theme="light"] div[data-baseweb="spinner"] input {
-        color: #000000 !important;
-    }
-    [data-theme="light"] div[data-baseweb="spinner"] button {
-        background: rgba(0, 0, 0, 0.07) !important;
-        color: #000000 !important;
-    }
-    [data-theme="light"] div[data-baseweb="spinner"] button:hover {
-        background: rgba(0, 0, 0, 0.1) !important;
-    }
-    [data-theme="light"] div[data-baseweb="spinner"] button:active {
-        background: rgba(0, 0, 0, 0.08) !important;
-    }
-
-    /* Dark mode specific */
-    [data-theme="dark"] .card-content {
-        color: #FAFAFA !important;
-    }
-
-    /* Status message styling */
-    .status-message {
-        padding: 1rem;
-        border-radius: 8px;
-        margin: 0.5rem 0;
-        border-left: 4px solid;
-    }
-
-    .status-info {
-        border-color: #2196F3;
-        background: rgba(33, 150, 243, 0.1);
-    }
-
-    .status-warning {
-        border-color: #FF9800;
-        background: rgba(255, 152, 0, 0.1);
-    }
-
-    .status-error {
-        border-color: #F44336;
-        background: rgba(244, 67, 54, 0.1);
-    }
-
-    .status-success {
-        border-color: #4CAF50;
-        background: rgba(76, 175, 80, 0.1);
-    }
-    </style>
-    """, unsafe_allow_html=True)
 
 def topbar(*args, **kwargs) -> None:
-    """Modern topbar with proper alignment"""
+    """
+    Modern topbar (token-based).
+    Usage:
+      topbar("Title", subtitle="...", right_chip="...")
+    """
     title = kwargs.get("title") or (args[0] if args else "")
     subtitle = kwargs.get("subtitle", "")
     right = kwargs.get("right_chip", "")
 
-    # Create container for proper alignment
-    col1, col2, col3 = st.columns([3, 6, 3])
+    title_h = _esc(title)
+    subtitle_h = _esc(subtitle)
+    right_h = _esc(right)
 
-    with col1:
-        if title:
-            st.markdown(
-                f"""
-                <div class="card-content">
-                <h2 style="margin: 0; font-weight: 600; font-size: 1.8rem;">{title}</h2>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+    st.markdown(
+        f"""
+<div class="bt-topbar bt-reset-markdown">
+  <div class="bt-topbar__left">
+    {"<h2 class='bt-topbar__title'>" + title_h + "</h2>" if title_h else ""}
+    {"<p class='bt-topbar__subtitle'>" + subtitle_h + "</p>" if subtitle_h else ""}
+  </div>
+  <div class="bt-topbar__right">
+    {"<span class='bt-chip'>" + right_h + "</span>" if right_h else ""}
+  </div>
+</div>
+<div class="bt-divider"></div>
+""",
+        unsafe_allow_html=True,
+    )
 
-    with col2:
-        if subtitle:
-            st.markdown(
-                f"""
-                <div class="card-content">
-                <p style="margin: 0.5rem 0; opacity: 0.8; font-size: 0.95rem;">{subtitle}</p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-    with col3:
-        if right:
-            st.markdown(
-                f"""
-                <div class="card-content" style="text-align: right;">
-                <span style="background: rgba(100, 100, 255, 0.1); padding: 0.4rem 1rem; border-radius: 20px; font-size: 0.9rem; border: 1px solid rgba(100, 100, 255, 0.3);">
-                {right}
-                </span>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
-    st.markdown("---")
 
 def status_card(title: str, message: str, level: str = "info", *_, **__) -> None:
-    """Modern status card with theme support"""
-    level = (level or "info").lower()
+    """
+    Status card using the same glass card base.
+    level: info | warning | error | success
+    """
+    lvl = (level or "info").strip().lower()
+    if lvl not in {"info", "warning", "error", "success"}:
+        lvl = "info"
 
-    # Define level-specific styling
-    level_styles = {
-        "info": "status-info",
-        "warning": "status-warning",
-        "error": "status-error",
-        "success": "status-success"
-    }
+    title_h = _esc(title)
+    msg_h = _esc(message)
 
-    status_class = level_styles.get(level, "status-info")
+    st.markdown(
+        f"""
+<div class="pure-glass-card bt-status bt-status--{lvl}">
+  <div class="bt-status__body">
+    <h3 class="bt-card-title">{title_h}</h3>
+    <p class="bt-card-text">{msg_h}</p>
+  </div>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
 
-    # Use container for proper card layout
-    with st.container():
-        st.markdown(
-            f"""
-            <div class="modern-card {status_class}">
-                <div class="card-content">
-                    <h3 style="margin: 0 0 1rem 0; font-weight: 600; font-size: 1.2rem;">{title}</h3>
-                    <p style="margin: 0; line-height: 1.6;">{message}</p>
-                </div>
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
 
 def card_open(*args, **kwargs) -> None:
-    """Open a modern, theme-aware card with proper alignment"""
+    """
+    Open a unified glass card wrapper.
+    IMPORTANT: call card_close() after content.
+
+    Usage:
+      card_open("Title", subtitle="...")
+      ... streamlit widgets ...
+      card_close()
+    """
     title = args[0] if args else ""
     subtitle = kwargs.get("subtitle", "")
 
-    # Create card container
-    card_container = st.container()
+    title_h = _esc(title)
+    subtitle_h = _esc(subtitle)
 
-    with card_container:
-        st.markdown('<div class="modern-card">', unsafe_allow_html=True)
+    # Use ONE consistent class used across app: pure-glass-card
+    st.markdown('<div class="pure-glass-card bt-reset-markdown">', unsafe_allow_html=True)
 
-        if title:
-            st.markdown(
-                f"""
-                <div class="card-content">
-                <h3 style="margin: 0 0 0.8rem 0; font-weight: 600; font-size: 1.3rem;">{title}</h3>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+    if title_h:
+        st.markdown(f'<h3 class="bt-card-title">{title_h}</h3>', unsafe_allow_html=True)
 
-        if subtitle:
-            st.markdown(
-                f"""
-                <div class="card-content">
-                <p style="margin: 0 0 1rem 0; opacity: 0.8; font-size: 0.95rem;">{subtitle}</p>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+    if subtitle_h:
+        st.markdown(f'<p class="bt-card-subtitle">{subtitle_h}</p>', unsafe_allow_html=True)
+
 
 def card_close(*args, **kwargs) -> None:
-    """Close the card container"""
-    st.markdown('</div>', unsafe_allow_html=True)
-    # Add spacing after card
-    st.markdown('<div style="margin-bottom: 1.5rem;"></div>', unsafe_allow_html=True)
+    """Close the card wrapper."""
+    st.markdown("</div>", unsafe_allow_html=True)
+    # consistent spacing after each card
+    st.markdown('<div class="bt-card-spacer"></div>', unsafe_allow_html=True)
+
 
 def create_card(title: str = "", content: str = "", **kwargs) -> None:
-    """Create a complete modern card with title and content"""
-    with st.container():
-        card_open(title, **kwargs)
-        if content:
-            st.markdown(
-                f"""
-                <div class="card-content">
-                <div style="padding: 1rem 0;">
-                {content}
-                </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-        card_close()
+    """
+    Create a full card with optional HTML content.
+    Note: content is injected as-is (HTML). If content comes from user input, escape it first.
+    """
+    card_open(title, subtitle=kwargs.get("subtitle", ""))
+
+    if content:
+        # If you want safe-by-default, replace the next line with: _esc(content)
+        st.markdown(content, unsafe_allow_html=True)
+
+    card_close()
+
 
 def modern_divider() -> None:
-    """Add a modern divider between sections"""
-    st.markdown(
-        """
-        <div style="height: 1px; background: linear-gradient(90deg, transparent, var(--border-color), transparent); margin: 2rem 0;"></div>
-        """,
-        unsafe_allow_html=True
-    )
+    """A themed divider."""
+    st.markdown('<div class="bt-divider"></div>', unsafe_allow_html=True)
