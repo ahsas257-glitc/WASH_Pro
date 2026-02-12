@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import streamlit as st
 
 from src.Tools.utils.types import Tool6Context
+from design.components.cards import pure_glass_panel
 from design.components.base_tool_ui import status_card
 
 
@@ -743,21 +744,6 @@ div[data-testid="column"] {{
   background: rgba(15,15,18,0.55);
   margin-bottom: 0.85rem;
 }}
-
-.t6-s6-card {{
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 14px;
-  padding: 14px;
-  background: rgba(255,255,255,0.02);
-  margin-bottom: 12px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}}
-.t6-s6-title {{
-  font-weight: 700;
-  margin: 0;
-}}
 .t6-s6-subtle {{
   opacity: 0.85;
   font-size: 0.92rem;
@@ -787,12 +773,10 @@ div[data-testid="column"] {{
 
 
 def _card(title: str, body_fn, *, help_text: str = "") -> None:
-    st.markdown("<div class='t6-s6-card'>", unsafe_allow_html=True)
-    st.markdown(f"<div class='t6-s6-title'>{title}</div>", unsafe_allow_html=True)
-    if help_text:
-        st.caption(help_text)
-    body_fn()
-    st.markdown("</div>", unsafe_allow_html=True)
+    # Unified card wrapper (consistent edges + theme tokens)
+    with pure_glass_panel(title=title, subtitle=help_text, variant="default", divider=False):
+        body_fn()
+
 
 
 # =============================================================================
