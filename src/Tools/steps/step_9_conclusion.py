@@ -19,15 +19,20 @@ SS_TXT = "tool6_conclusion_text"
 SS_RECO = "tool6_conclusion_reco"
 SS_KP = "tool6_conclusion_kp"            # list[str]
 
-# UX / automation
-SS_LOCK = "tool6_conclusion_approved"    # bool (lock final)
-SS_DIRTY = "tool6_conclusion_dirty"      # bool: user edited
-SS_FP = "tool6_conclusion_fp"            # fingerprint of upstream data used for auto suggestion
+SS_LOCK = "tool6_conclusion_confirmed"   # ✅ renamed canonical lock key (was approved)
+SS_DIRTY = "tool6_conclusion_dirty"
+SS_FP = "tool6_conclusion_fp"
 
-# Translation (API translator hook)
-SS_TR_TARGET = "tool6_conclusion_translate_target"  # "English"|"Persian/Dari"
-SS_TR_SOURCE = "tool6_conclusion_translate_source"  # "Conclusion"|"Reco"|"All"
-SS_TR_LAST_WARN = "tool6_conclusion_translate_warn" # last warning text
+SS_TR_TARGET = "tool6_conclusion_translate_target"
+SS_TR_SOURCE = "tool6_conclusion_translate_source"
+SS_TR_LAST_WARN = "tool6_conclusion_translate_warn"
+
+# NEW: navigation/stepper bridge keys (safe no-op if parent doesn't use them)
+SS_STEP9_READY = "tool6_step9_ready_for_next"
+SS_NAV_NEXT_REQUESTED = "tool6_nav_next_requested"
+
+# CSS injected guard
+SS_S9_CSS_DONE = "tool6_s9_css_done"
 
 
 # =============================================================================
@@ -73,12 +78,6 @@ def _strip_bullet_prefix(line: str) -> str:
 
 
 def bullets_from_text(text: str) -> List[str]:
-    """
-    Split free text into bullet items:
-      - newline-separated
-      - lines starting with -, *, •
-      - semicolon-separated fallback
-    """
     t = _s(text)
     if not t:
         return []
@@ -107,10 +106,8 @@ def _norm_sentence(v: Any) -> str:
     sv = " ".join(sv.split()).strip().rstrip(" .;:,")
     if not sv:
         return ""
-    # Add period if missing
     if sv[-1] not in ".!?":
         sv += "."
-    # Gentle capitalization
     if sv and sv[0].isalpha():
         sv = sv[0].upper() + sv[1:]
     return sv
@@ -142,10 +139,21 @@ def _default_conclusion_text() -> str:
     )
 
 
+def _ui_error(where: str, e: Exception) -> None:
+    st.error(
+        f"Action failed: {where}.\n\n"
+        f"Details: {type(e).__name__}: {e}"
+    )
+
+
 # =============================================================================
-# Responsive CSS + sticky bar
+# Responsive CSS + sticky bar (inject once)
 # =============================================================================
-def _inject_css() -> None:
+def _inject_css_once() -> None:
+    ss = st.session_state
+    if ss.get(SS_S9_CSS_DONE):
+        return
+
     st.markdown(
         f"""
 <style>
@@ -183,16 +191,15 @@ def _inject_css() -> None:
 """,
         unsafe_allow_html=True,
     )
+    ss[SS_S9_CSS_DONE] = True
 
 
 def _is_mobile() -> bool:
-    # Streamlit doesn't expose viewport width reliably; we approximate via CSS stacking,
-    # but for heights we keep a simple heuristic using session hint if set.
     return bool(st.session_state.get("_is_mobile_hint", False))
 
 
 # =============================================================================
-# Upstream extraction (matches your Step3/Step4 structure)
+# Upstream extraction
 # =============================================================================
 def _get_component_observations() -> List[Dict[str, Any]]:
     co = st.session_state.get("tool6_component_observations_final")
@@ -275,9 +282,6 @@ def _iter_recommendations(component_observations: List[Dict[str, Any]]) -> List[
 
 
 def _auto_key_points(component_observations: List[Dict[str, Any]], max_items: int = UIConfig.KP_MAX_AUTO) -> List[str]:
-    """
-    Smart: take the first distinct findings (trimmed) as key points.
-    """
     findings = _iter_major_findings(component_observations)
     out: List[str] = []
     for f in findings:
@@ -290,9 +294,6 @@ def _auto_key_points(component_observations: List[Dict[str, Any]], max_items: in
 
 
 def _auto_reco_summary(component_observations: List[Dict[str, Any]], max_items: int = UIConfig.RECO_MAX_AUTO) -> str:
-    """
-    Smart: collect distinct recommendations, compact, join by newline bullets.
-    """
     recs = _iter_recommendations(component_observations)
     compact: List[str] = []
     for r in recs:
@@ -307,9 +308,6 @@ def _auto_reco_summary(component_observations: List[Dict[str, Any]], max_items: 
 
 
 def _upstream_fingerprint(component_observations: List[Dict[str, Any]]) -> str:
-    """
-    Light fingerprint to detect upstream change.
-    """
     pieces: List[str] = []
     for comp in component_observations[:12]:
         if not isinstance(comp, dict):
@@ -336,19 +334,12 @@ def _upstream_fingerprint(component_observations: List[Dict[str, Any]]) -> str:
 
 
 # =============================================================================
-# Translation (API translator hook)
+# Translation
 # =============================================================================
 def _get_translate_callable(ctx: Tool6Context):
-    """
-    API Translator best option:
-    Provide callable in: st.session_state['tool6_translate_fn']
-    Signature: fn(text:str, target:str) -> str
-    """
     fn = st.session_state.get("tool6_translate_fn")
     if callable(fn):
         return fn
-
-    # Optional ctx injection
     for attr in ("translate", "translator", "translate_text"):
         maybe = getattr(ctx, attr, None)
         if callable(maybe):
@@ -366,14 +357,13 @@ def _translate_text(ctx: Tool6Context, text: str, target: str) -> Tuple[str, Opt
         return t, (
             "No translation engine is configured. "
             "Register a callable in st.session_state['tool6_translate_fn'] "
-            "with signature: (text, target) -> translated_text"
+            "with signature: (text, target) -> translated_text."
         )
-
     try:
         out = fn(t, target)
         return _split_paragraphs(out), None
     except Exception as e:
-        return t, f"Translation failed: {e}"
+        return t, f"Translation failed: {type(e).__name__}: {e}"
 
 
 # =============================================================================
@@ -381,6 +371,10 @@ def _translate_text(ctx: Tool6Context, text: str, target: str) -> Tuple[str, Opt
 # =============================================================================
 def _ensure_state_defaults() -> None:
     ss = st.session_state
+
+    # Backward compatibility: if old key exists, migrate once
+    if "tool6_conclusion_approved" in ss and SS_LOCK not in ss:
+        ss[SS_LOCK] = bool(ss.get("tool6_conclusion_approved", False))
 
     ss.setdefault(SS_PAYLOAD, {})
     payload = ss.get(SS_PAYLOAD) or {}
@@ -390,7 +384,6 @@ def _ensure_state_defaults() -> None:
     payload.setdefault("conclusion_text", _default_conclusion_text())
     payload.setdefault("key_points", [])
     payload.setdefault("recommendations_summary", "")
-
     ss[SS_PAYLOAD] = payload
 
     ss.setdefault(SS_TXT, payload.get("conclusion_text", _default_conclusion_text()))
@@ -401,13 +394,7 @@ def _ensure_state_defaults() -> None:
         ss[SS_KP] = list(kp) if isinstance(kp, list) else []
 
     ss.setdefault(SS_LOCK, False)
-    if not isinstance(ss.get(SS_LOCK), bool):
-        ss[SS_LOCK] = False
-
     ss.setdefault(SS_DIRTY, False)
-    if not isinstance(ss.get(SS_DIRTY), bool):
-        ss[SS_DIRTY] = False
-
     ss.setdefault(SS_FP, "")
 
     ss.setdefault(SS_TR_TARGET, UIConfig.DEFAULT_TRANSLATE_TARGET)
@@ -419,6 +406,9 @@ def _ensure_state_defaults() -> None:
         ss[SS_TR_SOURCE] = "All"
 
     ss.setdefault(SS_TR_LAST_WARN, "")
+
+    ss.setdefault(SS_STEP9_READY, False)
+    ss.setdefault(SS_NAV_NEXT_REQUESTED, False)
 
 
 def _commit_payload() -> None:
@@ -435,9 +425,6 @@ def _commit_payload() -> None:
 
 
 def _recompute_dirty(auto_txt: str, auto_kp: List[str], auto_reco: str) -> None:
-    """
-    Dirty if current differs from auto snapshot.
-    """
     ss = st.session_state
 
     cur_txt = _split_paragraphs(_s(ss.get(SS_TXT)))
@@ -449,7 +436,6 @@ def _recompute_dirty(auto_txt: str, auto_kp: List[str], auto_reco: str) -> None:
     auto_txt_n = _split_paragraphs(auto_txt)
     auto_reco_n = _s(auto_reco)
 
-    # normalize KP
     auto_kp_n = [_strip_bullet_prefix(_s(x)) for x in (auto_kp or []) if _s(x)]
     cur_kp_n = [_strip_bullet_prefix(_s(x)) for x in cur_kp if _s(x)]
 
@@ -459,11 +445,7 @@ def _recompute_dirty(auto_txt: str, auto_kp: List[str], auto_reco: str) -> None:
 # =============================================================================
 # UI components
 # =============================================================================
-def _kp_editor_fast() -> None:
-    """
-    Fast key points editor:
-    - single textarea (one per line)
-    """
+def _kp_editor_fast(locked: bool) -> None:
     ss = st.session_state
     kp_list: List[str] = ss.get(SS_KP) or []
     if not isinstance(kp_list, list):
@@ -477,6 +459,7 @@ def _kp_editor_fast() -> None:
         key=_key("kp_textarea"),
         placeholder="• Key point 1\n• Key point 2\n• Key point 3",
         label_visibility="collapsed",
+        disabled=locked,
     )
 
     new_list: List[str] = []
@@ -484,7 +467,6 @@ def _kp_editor_fast() -> None:
         ln = _strip_bullet_prefix(ln)
         if ln:
             new_list.append(ln)
-
     ss[SS_KP] = new_list
 
 
@@ -492,62 +474,46 @@ def _preview_panel() -> None:
     ss = st.session_state
     payload = ss.get(SS_PAYLOAD) or {}
 
-    preview_text = _s(payload.get("conclusion_text")) or _default_conclusion_text()
-    preview_kp = payload.get("key_points") or []
-    preview_reco = _s(payload.get("recommendations_summary"))
+    st.markdown("**Conclusion paragraph**")
+    st.write(_s(payload.get("conclusion_text")) or _default_conclusion_text())
 
-    with st.container(border=True):
-        st.markdown("**Conclusion paragraph**")
-        st.write(preview_text)
+    kp = payload.get("key_points") or []
+    if isinstance(kp, list) and any(_s(x) for x in kp):
+        st.markdown("**Key points**")
+        for it in kp:
+            if _s(it):
+                st.write(f"• {_s(it)}")
 
-    if isinstance(preview_kp, list) and any(_s(x) for x in preview_kp):
-        with st.container(border=True):
-            st.markdown("**Key points**")
-            for it in preview_kp:
-                if _s(it):
-                    st.write(f"• {_s(it)}")
-
-    if preview_reco:
-        items = bullets_from_text(preview_reco)
-        with st.container(border=True):
-            st.markdown("**Recommendations summary**")
-            if items:
-                for it in items:
-                    st.write(f"• {it}")
-            else:
-                st.write(preview_reco)
+    reco = _s(payload.get("recommendations_summary"))
+    if reco:
+        st.markdown("**Recommendations summary**")
+        items = bullets_from_text(reco)
+        if items:
+            for it in items:
+                st.write(f"• {it}")
+        else:
+            st.write(reco)
 
 
 # =============================================================================
 # MAIN
 # =============================================================================
 def render_step(ctx: Tool6Context) -> bool:
-    """
-    Step 9 — Conclusion (Advanced + Responsive + Sticky Actions + Dirty State + Translate)
-    Stores:
-      st.session_state["tool6_conclusion_payload"] = {
-          "conclusion_text": str,
-          "key_points": [str, ...],
-          "recommendations_summary": str
-      }
-    """
-    _inject_css()
+    _inject_css_once()
     _ensure_state_defaults()
 
+    ss = st.session_state
     component_observations = _get_component_observations()
     fp = _upstream_fingerprint(component_observations)
 
-    # Auto suggestions (do not overwrite user if dirty/approved)
     auto_txt = _default_conclusion_text()
     auto_kp = _auto_key_points(component_observations)
     auto_reco = _auto_reco_summary(component_observations)
 
-    # If upstream changed and user NOT dirty and NOT approved => refresh editor softly
-    ss = st.session_state
+    # Soft auto refresh (only if not dirty and not locked)
     if ss.get(SS_FP) != fp:
         ss[SS_FP] = fp
         if (not bool(ss.get(SS_DIRTY))) and (not bool(ss.get(SS_LOCK))):
-            # only fill if empty-ish
             if not _s(ss.get(SS_TXT)):
                 ss[SS_TXT] = auto_txt
             if not (ss.get(SS_KP) or []):
@@ -556,38 +522,44 @@ def render_step(ctx: Tool6Context) -> bool:
                 ss[SS_RECO] = auto_reco
 
     with st.container(border=True):
-
         # ---------------- Sticky action bar ----------------
         st.markdown('<div class="t6-s9-sticky">', unsafe_allow_html=True)
-        a1, a2, a3, a4, a5 = st.columns([1.15, 1.15, 1.15, 1.35, 1.20], gap="small")
+        a1, a2, a3, a4, a5, a6 = st.columns([1.15, 1.15, 1.15, 1.35, 1.05, 1.15], gap="small")
 
         with a1:
             if st.button("✨ Auto-fill", use_container_width=True, key=_key("autofill")):
-                ss[SS_TXT] = auto_txt
-                ss[SS_KP] = auto_kp
-                ss[SS_RECO] = auto_reco
-                ss[SS_DIRTY] = False
-                ss[SS_LOCK] = False
-                _commit_payload()
-                status_card("Auto-filled", "Draft generated from findings and recommendations.", level="success")
+                try:
+                    ss[SS_TXT] = auto_txt
+                    ss[SS_KP] = auto_kp
+                    ss[SS_RECO] = auto_reco
+                    ss[SS_DIRTY] = False
+                    ss[SS_LOCK] = False
+                    _commit_payload()
+                except Exception as e:
+                    _ui_error("Auto-fill", e)
 
         with a2:
             if st.button("↺ Reset", use_container_width=True, key=_key("reset")):
-                ss[SS_TXT] = _default_conclusion_text()
-                ss[SS_KP] = []
-                ss[SS_RECO] = ""
-                ss[SS_DIRTY] = False
-                ss[SS_LOCK] = False
-                _commit_payload()
-                status_card("Reset", "Reset to default text.", level="info")
+                try:
+                    ss[SS_TXT] = _default_conclusion_text()
+                    ss[SS_KP] = []
+                    ss[SS_RECO] = ""
+                    ss[SS_DIRTY] = False
+                    ss[SS_LOCK] = False
+                    _commit_payload()
+                except Exception as e:
+                    _ui_error("Reset", e)
 
         with a3:
             if st.button("💾 Save", use_container_width=True, key=_key("save")):
-                _commit_payload()
-                status_card("Saved", "Conclusion saved to session payload.", level="success")
+                try:
+                    _commit_payload()
+                    ss[SS_DIRTY] = False
+                    status_card("Saved", "Conclusion saved to session payload.", level="success")
+                except Exception as e:
+                    _ui_error("Save", e)
 
         with a4:
-            # translate (quick access)
             ss[SS_TR_TARGET] = st.selectbox(
                 "Translate to",
                 options=UIConfig.TRANSLATE_TARGETS,
@@ -597,22 +569,21 @@ def render_step(ctx: Tool6Context) -> bool:
             )
 
         with a5:
-            ss[SS_LOCK] = st.toggle(
-                "Approved",
-                value=bool(ss.get(SS_LOCK, False)),
-                key=_key("approved"),
-                help="When approved, auto-fill will not overwrite your final text.",
+            st.toggle(
+                "Confirmed",
+                key=SS_LOCK,
+                help="When confirmed, content is locked and used for the next step / DOCX.",
             )
+
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # ---------------- Tabs (reduce scrolling) ----------------
+        # ---------------- Tabs ----------------
         tab_draft, tab_insights, tab_controls = st.tabs(["Draft", "Insights", "Controls"])
 
-        # ======================================================
-        # Draft tab
-        # ======================================================
+        # ================= Draft =================
         with tab_draft:
             left, right = st.columns([0.58, 0.42], gap="large")
+            locked = bool(ss.get(SS_LOCK))
 
             with left:
                 h_txt = UIConfig.HEIGHT_CONCLUSION_MOBILE if _is_mobile() else UIConfig.HEIGHT_CONCLUSION_DESKTOP
@@ -625,11 +596,11 @@ def render_step(ctx: Tool6Context) -> bool:
                     height=h_txt,
                     label_visibility="collapsed",
                     placeholder="Write your conclusion paragraph here...",
-                    disabled=bool(ss.get(SS_LOCK)),
+                    disabled=locked,
                 )
 
                 st.markdown("### Key points (optional)")
-                _kp_editor_fast()
+                _kp_editor_fast(locked=locked)
 
                 st.markdown("### Recommendations summary (optional)")
                 st.text_area(
@@ -638,14 +609,13 @@ def render_step(ctx: Tool6Context) -> bool:
                     height=h_reco,
                     label_visibility="collapsed",
                     placeholder="Paste bullets / lines / semicolon-separated recommendations...",
-                    disabled=bool(ss.get(SS_LOCK)),
+                    disabled=locked,
                 )
 
-                # Commit + dirty
+                # Commit + dirty (light ops only)
                 _commit_payload()
                 _recompute_dirty(auto_txt, auto_kp, auto_reco)
 
-                # counters
                 txt = _split_paragraphs(_s(ss.get(SS_TXT)))
                 kp_count = len([x for x in (ss.get(SS_KP) or []) if _s(x)])
                 reco_items = bullets_from_text(_s(ss.get(SS_RECO)))
@@ -656,65 +626,40 @@ def render_step(ctx: Tool6Context) -> bool:
                     unsafe_allow_html=True,
                 )
 
-                # status
-                if ss.get(SS_LOCK):
-                    status_card("Approved", "This content is locked and will be used in DOCX.", level="success")
-
-
-
             with right:
                 st.markdown("### Live preview (DOCX content)")
                 _preview_panel()
-                st.caption("✅ Stored in: st.session_state['tool6_conclusion_payload']")
+                st.caption("Stored in: st.session_state['tool6_conclusion_payload'].")
 
-        # ======================================================
-        # Insights tab
-        # ======================================================
+        # ================= Insights =================
         with tab_insights:
-            findings = _iter_major_findings(component_observations)
-            recs = _iter_recommendations(component_observations)
+            try:
+                findings = _iter_major_findings(component_observations)
+                recs = _iter_recommendations(component_observations)
 
-            c1, c2, c3 = st.columns([1.2, 1.2, 1.2], gap="small")
-            c1.metric("Detected findings", str(len(findings)))
-            c2.metric("Detected recommendations", str(len(recs)))
-            c3.metric("Approved", "Yes" if ss.get(SS_LOCK) else "No")
+                c1, c2, c3 = st.columns([1.2, 1.2, 1.2], gap="small")
+                c1.metric("Detected findings", str(len(findings)))
+                c2.metric("Detected recommendations", str(len(recs)))
+                c3.metric("Confirmed", "Yes" if ss.get(SS_LOCK) else "No")
 
-            st.divider()
+                st.divider()
+                with st.expander("Show top findings (auto source)", expanded=False):
+                    if findings:
+                        for f in findings[:12]:
+                            st.write(f"• {f}")
+                    else:
+                        st.info("No findings detected from major_table.")
 
-            with st.expander("Show top findings (auto source)", expanded=False):
-                if findings:
-                    for f in findings[:12]:
-                        st.write(f"• {f}")
-                else:
-                    st.info("No findings detected from major_table.")
+                with st.expander("Show top recommendations (auto source)", expanded=False):
+                    if recs:
+                        for r in recs[:12]:
+                            st.write(f"• {r}")
+                    else:
+                        st.info("No recommendations detected from observations_valid[].recommendations.")
+            except Exception as e:
+                _ui_error("Insights", e)
 
-            with st.expander("Show top recommendations (auto source)", expanded=False):
-                if recs:
-                    for r in recs[:12]:
-                        st.write(f"• {r}")
-                else:
-                    st.info("No recommendations detected from observations_valid[].recommendations.")
-
-            st.divider()
-            st.markdown("**Auto draft preview (what Auto-fill would generate):**")
-            with st.container(border=True):
-                st.write(_default_conclusion_text())
-                akp = _auto_key_points(component_observations)
-                if akp:
-                    st.write("")
-                    st.markdown("**Key points:**")
-                    for x in akp:
-                        st.write(f"• {x}")
-                areco = _auto_reco_summary(component_observations)
-                if areco:
-                    st.write("")
-                    st.markdown("**Recommendations:**")
-                    for x in bullets_from_text(areco):
-                        st.write(f"• {x}")
-
-        # ======================================================
-        # Controls tab (Translate + quick actions)
-        # ======================================================
+        # ================= Controls =================
         with tab_controls:
             st.markdown("### Translation (one-click)")
 
@@ -739,50 +684,50 @@ def render_step(ctx: Tool6Context) -> bool:
 
             with t3:
                 if st.button("Translate Now", use_container_width=True, key=_key("tr_now")):
-                    warn_all: List[str] = []
-                    changed = False
+                    try:
+                        warn_all: List[str] = []
+                        changed = False
 
-                    if ss.get(SS_TR_SOURCE) in ("Conclusion", "All"):
-                        translated, warn = _translate_text(ctx, _s(ss.get(SS_TXT)), _s(ss.get(SS_TR_TARGET)))
-                        if warn:
-                            warn_all.append(warn)
+                        if ss.get(SS_TR_SOURCE) in ("Conclusion", "All"):
+                            translated, warn = _translate_text(ctx, _s(ss.get(SS_TXT)), _s(ss.get(SS_TR_TARGET)))
+                            if warn:
+                                warn_all.append(warn)
+                            else:
+                                ss[SS_TXT] = translated
+                                changed = True
+
+                        if ss.get(SS_TR_SOURCE) in ("Reco", "All"):
+                            translated, warn = _translate_text(ctx, _s(ss.get(SS_RECO)), _s(ss.get(SS_TR_TARGET)))
+                            if warn:
+                                warn_all.append(warn)
+                            else:
+                                ss[SS_RECO] = translated
+                                changed = True
+
+                        if warn_all:
+                            ss[SS_TR_LAST_WARN] = "\n".join(sorted(set(warn_all)))
+                            status_card("Translation not configured", ss[SS_TR_LAST_WARN], level="warning")
                         else:
-                            ss[SS_TXT] = translated
-                            changed = True
+                            ss[SS_TR_LAST_WARN] = ""
+                            if changed:
+                                ss[SS_DIRTY] = True
+                                ss[SS_LOCK] = False
+                                _commit_payload()
 
-                    if ss.get(SS_TR_SOURCE) in ("Reco", "All"):
-                        translated, warn = _translate_text(ctx, _s(ss.get(SS_RECO)), _s(ss.get(SS_TR_TARGET)))
-                        if warn:
-                            warn_all.append(warn)
-                        else:
-                            ss[SS_RECO] = translated
-                            changed = True
-
-                    if warn_all:
-                        ss[SS_TR_LAST_WARN] = "\n".join(sorted(set(warn_all)))
-                        status_card("Translation not configured", ss[SS_TR_LAST_WARN], level="warning")
-                    else:
-                        ss[SS_TR_LAST_WARN] = ""
-                        if changed:
-                            ss[SS_DIRTY] = True
-                            ss[SS_LOCK] = False
-                            _commit_payload()
-                            # store bilingual variants (optional)
-                            payload = ss.get(SS_PAYLOAD) or {}
-                            payload[f"conclusion_text__{ss[SS_TR_TARGET]}"] = _s(ss.get(SS_TXT))
-                            payload[f"recommendations_summary__{ss[SS_TR_TARGET]}"] = _s(ss.get(SS_RECO))
-                            ss[SS_PAYLOAD] = payload
-                            status_card("Translated", "Translation applied. Please review then approve.", level="success")
+                                payload = ss.get(SS_PAYLOAD) or {}
+                                payload[f"conclusion_text__{ss[SS_TR_TARGET]}"] = _s(ss.get(SS_TXT))
+                                payload[f"recommendations_summary__{ss[SS_TR_TARGET]}"] = _s(ss.get(SS_RECO))
+                                ss[SS_PAYLOAD] = payload
+                    except Exception as e:
+                        _ui_error("Translate Now", e)
 
             with t4:
                 with st.popover("How to enable API translator", use_container_width=True):
                     st.write(
-                        "✅ Best option: API translator\n\n"
                         "Register a callable in:\n"
                         "st.session_state['tool6_translate_fn']\n\n"
                         "Signature:\n"
-                        "def translate_fn(text: str, target: str) -> str\n\n"
-                        "Then the Translate button works instantly."
+                        "def translate_fn(text: str, target: str) -> str"
                     )
 
             if _s(ss.get(SS_TR_LAST_WARN)):
@@ -790,34 +735,47 @@ def render_step(ctx: Tool6Context) -> bool:
 
             st.divider()
             st.markdown("### Quick actions")
-            q1, q2, q3 = st.columns([1.1, 1.1, 1.8], gap="small")
+            q1, q2 = st.columns([1.2, 1.2], gap="small")
+
             with q1:
                 if st.button("Normalize punctuation", use_container_width=True, key=_key("norm")):
-                    ss[SS_TXT] = _split_paragraphs(_norm_sentence(_s(ss.get(SS_TXT))).rstrip(".") + ".")
-                    # normalize reco lines
-                    reco_items = bullets_from_text(_s(ss.get(SS_RECO)))
-                    if reco_items:
-                        ss[SS_RECO] = "\n".join([f"• {_norm_sentence(x).rstrip('.')}" for x in reco_items]).strip()
-                    ss[SS_DIRTY] = True
-                    ss[SS_LOCK] = False
-                    _commit_payload()
-                    status_card("Normalized", "Text cleaned and standardized.", level="success")
+                    try:
+                        ss[SS_TXT] = _split_paragraphs(_norm_sentence(_s(ss.get(SS_TXT))).rstrip(".") + ".")
+                        reco_items = bullets_from_text(_s(ss.get(SS_RECO)))
+                        if reco_items:
+                            ss[SS_RECO] = "\n".join([f"• {_norm_sentence(x).rstrip('.')}" for x in reco_items]).strip()
+                        ss[SS_DIRTY] = True
+                        ss[SS_LOCK] = False
+                        _commit_payload()
+                    except Exception as e:
+                        _ui_error("Normalize punctuation", e)
 
             with q2:
-                if st.button("Approve & lock", use_container_width=True, key=_key("approve_lock")):
-                    ss[SS_LOCK] = True
-                    _commit_payload()
-                    status_card("Approved", "Locked for DOCX output.", level="success")
+                if st.button("Confirm & lock", use_container_width=True, key=_key("confirm_lock")):
+                    try:
+                        ss[SS_LOCK] = True
+                        _commit_payload()
+                    except Exception as e:
+                        _ui_error("Confirm & lock", e)
 
+        # ---------------- Footer status + NEXT gating ----------------
+        st.divider()
 
-        # Final validation hint
         final_txt = _split_paragraphs(_s(ss.get(SS_TXT)))
-        if not final_txt:
-            status_card("Empty text", "Conclusion text is empty. Default will be used in DOCX.", level="warning")
+        confirmed = bool(ss.get(SS_LOCK))
+        has_text = bool(final_txt)
+
+        ready = confirmed and has_text
+        ss[SS_STEP9_READY] = ready
+
+        if not has_text:
+            status_card("Empty", "Conclusion text is empty. Please write a conclusion paragraph.", level="warning")
+        elif not confirmed:
+            status_card("Edited (not confirmed)", "Please confirm when final to continue.", level="warning")
         else:
-            status_card("Ready", "Conclusion payload is ready for DOCX generation.", level="success")
+            status_card("Confirmed", "This content is locked and will be used in DOCX.", level="success")
 
         card_close()
 
-    # Safe: builder already has fallbacks; always allow Next
-    return True
+    # IMPORTANT: do NOT allow next unless confirmed + non-empty
+    return bool(st.session_state.get(SS_STEP9_READY, False))
