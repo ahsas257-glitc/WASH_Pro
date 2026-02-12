@@ -37,6 +37,12 @@ SS_COVER_DATE_FMT = "cover_date_format"
 SS_IMG_CACHE = "tool6_cover_img_cache"      # {url: {"ts": float, "ok": bool, "bytes": b, "msg": str}}
 SS_IMG_CACHE_CFG = "tool6_cover_img_cache_cfg"
 
+# ✅ Auth fingerprint (set this after login to auto-reset caches)
+# Example elsewhere in your login code:
+# st.session_state[SS_AUTH_FINGERPRINT] = hashlib.md5(f"{email}:{token}".encode()).hexdigest()
+SS_AUTH_FINGERPRINT = "tool6_auth_fingerprint"
+SS_AUTH_FINGERPRINT_LAST = "tool6_auth_fingerprint_last"
+
 # Widget keys
 W_DATE_FMT_LABEL = "t6_date_fmt_label"
 W_EDIT_TOGGLE = "t6_cover_edit_toggle"
@@ -48,12 +54,12 @@ W_UPLOAD = "t6_cover_upload"
 # =============================================================================
 # UI constants
 # =============================================================================
-GRID_COLS = 2               # ✅ ثابت: دو ستون کنار هم
-PER_PAGE = 12               # ✅ برای سرعت در Cloud پایین نگه دارید
-THUMB_BOX = 200             # ✅ کمی کوچک‌تر از قبل (220) برای نمایش خردتر
+GRID_COLS = 2
+PER_PAGE = 12
+THUMB_BOX = 200
 
 # Hover HD tuning (performance)
-HOVER_HD_MAXPX = 1600       # کمی کمتر => سریع‌تر
+HOVER_HD_MAXPX = 1600
 HOVER_HD_QUALITY = 85
 
 # Cache / limits
@@ -62,7 +68,7 @@ IMG_TTL_FAIL = 90
 IMG_CACHE_MAX_ITEMS = 600
 IMG_MAX_MB = 25
 
-# Adaptive HD budget (per visible page) - برای سرعت Cloud بهتره کم باشه
+# Adaptive HD budget (per visible page)
 HD_BUDGET = 24
 
 
@@ -116,20 +122,39 @@ def _key(*parts: Any) -> str:
     return hashlib.md5(raw.encode("utf-8", errors="ignore")).hexdigest()[:12]
 
 
+# =============================================================================
+# ✅ FIX 1: Relaxed image detection
+# - لینک‌های بدون extension (مثل download?id=...) را حذف نکن.
+# - فقط موارد واضحِ غیرعکس را حذف کن (pdf/zip/audio/...).
+# =============================================================================
 def _is_likely_image(url: str, label: str = "") -> bool:
     u = _s(url).lower()
     if not u:
         return False
+
+    # obvious non-image
     if NON_IMG_HINT.search(u) or AUDIO_EXT_PATTERN.search(u):
         return False
+
+    # explicit image extension
     if IMG_EXT_PATTERN.search(u):
         return True
+
+    # common service-style image endpoints without extension
+    if any(x in u for x in ("download", "file", "media", "attachment", "content", "blob", "thumbnail", "thumb")):
+        return True
+
+    # googleusercontent
     if "googleusercontent.com" in u or "lh3.googleusercontent.com" in u:
         return True
+
+    # label hint
     lbl = _s(label).lower()
-    if any(w in lbl for w in ("photo", "image", "picture")):
+    if any(w in lbl for w in ("photo", "image", "picture", "img", "cover")):
         return True
-    return False
+
+    # conservative: keep it, fetch will decide
+    return True
 
 
 def _only_images(urls: List[str], labels: Dict[str, str]) -> List[str]:
@@ -139,9 +164,9 @@ def _only_images(urls: List[str], labels: Dict[str, str]) -> List[str]:
         u = _s(u)
         if not u:
             continue
-        if not _is_likely_image(u, labels.get(u, "")):
-            continue
         if u in seen:
+            continue
+        if not _is_likely_image(u, labels.get(u, "")):
             continue
         seen.add(u)
         out.append(u)
@@ -153,19 +178,19 @@ def _only_images(urls: List[str], labels: Dict[str, str]) -> List[str]:
 # =============================================================================
 def _inject_css() -> None:
     st.markdown(
-        f"""
+        """
 <style>
-  [data-testid="stVerticalBlock"] {{ gap: 0.65rem; }}
+  [data-testid="stVerticalBlock"] { gap: 0.65rem; }
 
-  .t6-card {{
+  .t6-card {
     border: 1px solid rgba(255,255,255,0.12);
     border-radius: 14px;
     overflow: hidden;
     background: rgba(255,255,255,0.02);
-  }}
+  }
 
-  /* ✅ مربع واقعی */
-  .t6-imgbox {{
+  /* مربع واقعی */
+  .t6-imgbox {
     width: 100%;
     aspect-ratio: 1 / 1;
     background: rgba(0,0,0,0.08);
@@ -173,9 +198,9 @@ def _inject_css() -> None:
     place-items: center;
     position: relative;
     overflow: hidden;
-  }}
+  }
 
-  .t6-imgbox img.t6-thumb {{
+  .t6-imgbox img.t6-thumb {
     width: 100%;
     height: 100%;
     object-fit: contain;
@@ -183,9 +208,9 @@ def _inject_css() -> None:
     transition: transform 160ms ease, opacity 120ms ease;
     transform: scale(1.0);
     opacity: 1;
-  }}
+  }
 
-  .t6-imgbox img.t6-hd {{
+  .t6-imgbox img.t6-hd {
     position:absolute;
     inset:0;
     width: 100%;
@@ -195,39 +220,37 @@ def _inject_css() -> None:
     transform: scale(1.04);
     transition: opacity 120ms ease, transform 160ms ease;
     will-change: transform, opacity;
-  }}
+  }
 
-  .t6-card:hover .t6-imgbox img.t6-thumb {{
+  .t6-card:hover .t6-imgbox img.t6-thumb {
     transform: scale(1.08);
     opacity: 0.08;
-  }}
+  }
 
-  .t6-card:hover .t6-imgbox img.t6-hd {{
+  .t6-card:hover .t6-imgbox img.t6-hd {
     opacity: 1;
     transform: scale(1.14);
-  }}
+  }
 
-  .t6-cap {{
+  .t6-cap {
     padding: 6px 10px 8px 10px;
     font-size: 11px;
     opacity: .86;
     line-height: 1.25;
-    min-height: 34px;    /* ✅ هم‌تراز شدن کپشن‌ها */
+    min-height: 34px;
     word-break: break-word;
     text-align: right;
-  }}
+  }
 
-  .t6-btn-wrap {{
-    margin-top: 8px;
-  }}
+  .t6-btn-wrap { margin-top: 8px; }
 
-  .t6-box {{
+  .t6-box {
     border: 1px solid rgba(255,255,255,0.10);
     border-radius: 14px;
     padding: 14px;
     background: rgba(255,255,255,0.02);
     margin: 0.25rem 0 0.75rem 0;
-  }}
+  }
 </style>
 """,
         unsafe_allow_html=True,
@@ -256,9 +279,6 @@ def _to_clean_png_bytes(raw: bytes, *, max_px: int = 2600) -> bytes:
 
 
 def _make_thumb_contain(img_bytes: bytes, *, box: int = THUMB_BOX, quality: int = 82) -> Optional[bytes]:
-    """
-    thumb سبک و سریع: مربع contain + پس‌زمینه ثابت
-    """
     try:
         img = Image.open(BytesIO(img_bytes))
         img = ImageOps.exif_transpose(img).convert("RGB")
@@ -318,7 +338,7 @@ def _card_html_with_hover(thumb_bytes: Optional[bytes], hd_bytes: Optional[bytes
 
 
 # =============================================================================
-# TTL fetch cache wrapper (critical for Streamlit Cloud speed)
+# TTL fetch cache wrapper
 # =============================================================================
 def _fetch_image_cached(
     url: str,
@@ -572,10 +592,34 @@ def _keep_only_cover(*, cover_url: str, cover_bytes: Optional[bytes]) -> None:
 
 
 # =============================================================================
+# ✅ FIX 2: Cache reset helpers (important after login)
+# =============================================================================
+def reset_cover_image_caches() -> None:
+    ss = st.session_state
+    ss[SS_COVER_THUMBS] = {}
+    ss[SS_PHOTO_THUMBS] = {}
+    ss[SS_PHOTO_BYTES] = {}
+    ss[SS_IMG_CACHE] = {}
+
+
+def _maybe_reset_on_auth_change() -> None:
+    ss = st.session_state
+    fp = _s(ss.get(SS_AUTH_FINGERPRINT))
+    last = _s(ss.get(SS_AUTH_FINGERPRINT_LAST))
+    if fp and fp != last:
+        reset_cover_image_caches()
+        ss[SS_AUTH_FINGERPRINT_LAST] = fp
+
+
+# =============================================================================
 # State init
 # =============================================================================
 def _ensure_state(ctx: Tool6Context) -> None:
     ss = st.session_state
+
+    # ✅ After login/token refresh, clear fail-cache/thumbs automatically
+    _maybe_reset_on_auth_change()
+
     ss.setdefault(SS_COVER_DATE_FMT, "%d/%b/%Y")
 
     if SS_COVER_OVERRIDES not in ss or not isinstance(ss[SS_COVER_OVERRIDES], dict):
@@ -653,7 +697,7 @@ def _on_date_fmt_change(ctx: Tool6Context) -> None:
 
 
 # =============================================================================
-# Picker (FAST + EXACT 2-up layout like your screenshot)
+# Picker
 # =============================================================================
 def _render_picker(
     *,
@@ -693,10 +737,7 @@ def _render_picker(
                 ss[SS_COVER_URL] = ""
                 ss[SS_COVER_BYTES] = None
                 ss[SS_COVER_UPLOAD_BYTES] = None
-                ss[SS_COVER_THUMBS] = {}
-                ss[SS_PHOTO_THUMBS] = {}
-                ss[SS_PHOTO_BYTES] = {}
-                ss[SS_IMG_CACHE] = {}
+                reset_cover_image_caches()
                 st.rerun()
         with c2:
             if st.button("Clear cover", use_container_width=True, key=_key("clr_cover")):
@@ -704,10 +745,7 @@ def _render_picker(
                 ss[SS_COVER_URL] = ""
                 ss[SS_COVER_BYTES] = None
                 ss[SS_COVER_UPLOAD_BYTES] = None
-                ss[SS_COVER_THUMBS] = {}
-                ss[SS_PHOTO_THUMBS] = {}
-                ss[SS_PHOTO_BYTES] = {}
-                ss[SS_IMG_CACHE] = {}
+                reset_cover_image_caches()
                 st.rerun()
 
         st.markdown("</div>", unsafe_allow_html=True)
@@ -754,14 +792,13 @@ def _render_picker(
     start = (int(page) - 1) * PER_PAGE
     chunk = filtered[start : start + PER_PAGE]
 
-    # ✅ preload thumbs only for visible page (fast)
+    # preload thumbs only for visible page
     for u in chunk:
         cache_thumbnail_only(u, fetch_image=fetch_image)
 
-    # ✅ HD only for first N visible items
+    # HD only for first N visible items
     hd_set = set(chunk[: min(HD_BUDGET, len(chunk))])
 
-    # ✅ EXACT 2-up layout like screenshot: use st.columns(2)
     for i in range(0, len(chunk), GRID_COLS):
         row = chunk[i : i + GRID_COLS]
         cols = st.columns(GRID_COLS, gap="medium")
@@ -785,13 +822,15 @@ def _render_picker(
 
 
 # =============================================================================
-# Panels (fragmented so form edits don't rerender heavy gallery)
+# Panels
 # =============================================================================
 @st.fragment
 def _images_panel(ctx: Tool6Context, fetch_image) -> None:
     st.markdown("### Available Images")
     all_urls = getattr(ctx, "all_photo_urls", []) or []
     labels = getattr(ctx, "photo_label_by_url", {}) or {}
+
+    # ✅ FIX 3: show all likely images (including no-extension service URLs)
     imgs = _only_images(all_urls, labels)
 
     if not imgs and not resolve_cover_bytes():
@@ -824,10 +863,7 @@ def _upload_panel() -> None:
         ss[SS_COVER_PICK_LOCKED] = True
 
         # keep only uploaded cover
-        ss[SS_COVER_THUMBS] = {}
-        ss[SS_PHOTO_THUMBS] = {}
-        ss[SS_PHOTO_BYTES] = {}
-        ss[SS_IMG_CACHE] = {}
+        reset_cover_image_caches()
 
         st.image(processed, use_container_width=True, caption="Uploaded cover")
         st.success("Custom cover uploaded and selected.")
@@ -843,13 +879,11 @@ def render_step(
     fetch_image: Callable[[str], Tuple[bool, Optional[bytes], str]],
 ) -> bool:
     """
-    Step 1 (FAST):
-      - ✅ 2 ستون دقیقاً مثل اسکرین‌شات
-      - ✅ کارت مربع واقعی
-      - ✅ TTL fetch cache
-      - ✅ فقط thumbهای صفحه فعلی
-      - ✅ HD محدود برای سرعت
-      - ✅ st.fragment برای جلوگیری از rerun سنگین
+    ✅ Fixes applied:
+      1) لینک‌های بدون extension حذف نمی‌شوند؛ fetch تعیین تکلیف می‌کند.
+      2) بعد از تغییر auth (لاگین/refresh token)، cache ها خودکار پاک می‌شوند
+         (به شرط اینکه بیرون از این فایل SS_AUTH_FINGERPRINT را set کنید).
+      3) بقیه رفتار UI مثل قبل (2 ستون، کارت مربع، thumb-page، HD budget).
     """
     _ensure_state(ctx)
     _inject_css()
@@ -863,7 +897,7 @@ def render_step(
     st.divider()
     st.subheader("Cover Page Details")
 
-    # --- Date format ---
+    # Date format
     fmt_labels = [x for x, _ in DATE_FORMATS]
     cur_fmt = _s(st.session_state.get(SS_COVER_DATE_FMT, "%d/%b/%Y")) or "%d/%b/%Y"
     idx = next((i for i, (_, f) in enumerate(DATE_FORMATS) if f == cur_fmt), 0)
