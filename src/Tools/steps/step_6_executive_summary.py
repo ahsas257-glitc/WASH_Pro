@@ -15,54 +15,62 @@ from design.components.base_tool_ui import status_card
 # =============================================================================
 # Session keys (Tool6 naming)
 # =============================================================================
-SS_EXEC_TEXT = "tool6_exec_summary_text"          # final text (editable)
-SS_EXEC_APPROVED = "tool6_exec_summary_approved"  # bool
-SS_EXEC_HASH = "tool6_exec_summary_hash"          # cache hash for auto-generation
-SS_EXEC_AUTO = "tool6_exec_summary_auto_text"     # last generated auto text
+# NOTE:
+# - RAW key is used ONLY by Streamlit widget (text_area). Never assign to RAW after widget is created.
+# - FINAL key is the normalized value used for DOCX + gating.
+SS_EXEC_TEXT_RAW = "tool6_exec_summary_text_raw"      # widget-owned raw text (key for st.text_area)
+SS_EXEC_TEXT = "tool6_exec_summary_text"              # normalized final text (safe to set programmatically)
+
+SS_EXEC_HASH = "tool6_exec_summary_hash"              # cache hash for auto-generation
+SS_EXEC_AUTO = "tool6_exec_summary_auto_text"         # last generated auto text
+
+# Renamed: Approved -> Confirmed (canonical)
+SS_EXEC_CONFIRMED = "tool6_exec_summary_confirmed"    # bool (was tool6_exec_summary_approved)
 
 # UX / Advanced automation
-SS_EXEC_DIRTY = "tool6_exec_summary_dirty"        # user edited manually
-SS_EXEC_STYLE = "tool6_exec_summary_style"        # "Short"|"Standard"|"Detailed"
-SS_EXEC_TONE = "tool6_exec_summary_tone"          # "Neutral"|"Formal"|"Action-oriented"
-SS_EXEC_FORMAT = "tool6_exec_summary_format"      # "Paragraphs"|"Bullets"
+SS_EXEC_DIRTY = "tool6_exec_summary_dirty"            # user edited manually (vs auto)
+SS_EXEC_STYLE = "tool6_exec_summary_style"            # "Short"|"Standard"|"Detailed"
+SS_EXEC_TONE = "tool6_exec_summary_tone"              # "Neutral"|"Formal"|"Action-oriented"
+SS_EXEC_FORMAT = "tool6_exec_summary_format"          # "Paragraphs"|"Bullets"
 SS_EXEC_INCLUDE_WORK = "tool6_exec_summary_include_workprogress"  # bool
 SS_EXEC_ISSUES_SELECTED = "tool6_exec_summary_issues_selected"    # list[str]
 SS_EXEC_SHOW_DIFF = "tool6_exec_summary_show_diff"               # bool
 
 # Template library + translation
-SS_EXEC_TEMPLATE = "tool6_exec_summary_template"                 # selected template name
-SS_EXEC_TRANSLATE_TARGET = "tool6_exec_summary_translate_target" # "English"|"Persian/Dari"
-SS_EXEC_TRANSLATE_SOURCE = "tool6_exec_summary_translate_source" # "Edited"|"Auto"
+SS_EXEC_TEMPLATE = "tool6_exec_summary_template"                  # selected template name
+SS_EXEC_TRANSLATE_TARGET = "tool6_exec_summary_translate_target"  # "English"|"Persian/Dari"
+SS_EXEC_TRANSLATE_SOURCE = "tool6_exec_summary_translate_source"  # "Edited"|"Auto"
 
 # Upstream keys
 SS_GENERAL_OVERRIDES = "general_info_overrides"
 SS_WORK = "tool6_work_progress_rows"  # Step 5 output (optional)
+
+# Navigation/stepper bridge keys (safe no-op if parent doesn't use them)
+SS_STEP6_READY = "tool6_step6_ready_for_next"
+SS_NAV_NEXT_REQUESTED = "tool6_nav_next_requested"
+
+# CSS injected guard
+SS_S6_CSS_DONE = "tool6_s6_css_done"
 
 
 # =============================================================================
 # Config
 # =============================================================================
 class UIConfig:
-    # Responsive behavior
     MOBILE_BREAKPOINT_PX = 900
 
-    # Editor
     EDITOR_HEIGHT_DESKTOP = 360
     EDITOR_HEIGHT_MOBILE = 280
 
-    # Default options
     DEFAULT_STYLE = "Standard"
     DEFAULT_TONE = "Neutral"
     DEFAULT_FORMAT = "Paragraphs"
     DEFAULT_INCLUDE_WORK = True
 
-    # Templates
     DEFAULT_TEMPLATE = "Standard TPM (Balanced)"
 
-    # Translation targets
     TRANSLATE_TARGETS = ["English", "Persian/Dari"]
 
-    # Layout
     MAX_CONTENT_WIDTH_PX = 1180
 
 
@@ -130,10 +138,6 @@ def _is_nonempty(v: Any) -> bool:
 
 
 def _safe_index(options: List[str], value: str, default_value: str) -> int:
-    """
-    Streamlit selectbox index must be valid. This helper prevents ValueError
-    and keeps sections aligned (no broken widgets -> no layout shift).
-    """
     v = value if value in options else default_value
     try:
         return options.index(v)
@@ -412,7 +416,6 @@ def _build_exec_summary_text_advanced(
     date_phrase = f" on {visit_date}" if visit_date else ""
 
     tp = _tone_phrases(tone)
-
     wp_sentence = _work_progress_summary(st.session_state.get(SS_WORK, [])) if include_work_progress else ""
 
     p1 = (
@@ -497,7 +500,7 @@ def _build_exec_summary_text_advanced(
 
 
 # =============================================================================
-# Translation (pluggable: uses a callable if available)
+# Translation (pluggable)
 # =============================================================================
 def _get_translate_callable(ctx: Tool6Context):
     fn = st.session_state.get("tool6_translate_fn")
@@ -555,13 +558,11 @@ def _fingerprint_core(
         _s(row.get("Project_Status")),
         _s(row.get("Project_progress")),
 
-        # issue-driving fields
         _s(row.get("pipeline_installation_issue")),
         _s(row.get("leakage_observed")),
         _s(row.get("solar_panel_dust")),
         _s(row.get("community_training_conducted")),
 
-        # overrides (common human fields)
         _s(overrides.get("Province")),
         _s(overrides.get("District")),
         _s(overrides.get("Village / Community")),
@@ -570,7 +571,6 @@ def _fingerprint_core(
         _s(overrides.get("Project Status")),
         _s(overrides.get("Project progress")),
 
-        # controls
         _s(style),
         _s(tone),
         _s(fmt),
@@ -602,25 +602,25 @@ def _apply_template(ctx: Tool6Context, template_name: str) -> None:
     row = ctx.row or {}
     overrides = ss.get(SS_GENERAL_OVERRIDES, {}) or {}
     detected = _detect_issue_labels(row, overrides)
-
     ss[SS_EXEC_ISSUES_SELECTED] = detected if bool(tpl.get("include_detected_issues", True)) else []
 
     ss[SS_EXEC_HASH] = ""
     ss[SS_EXEC_DIRTY] = False
-    ss[SS_EXEC_APPROVED] = False
+    ss[SS_EXEC_CONFIRMED] = False
 
 
 def _ensure_state(ctx: Tool6Context) -> None:
     ss = st.session_state
 
-    ss.setdefault(SS_EXEC_TEXT, "")
+    # Backward compatibility migration
+    if "tool6_exec_summary_approved" in ss and SS_EXEC_CONFIRMED not in ss:
+        ss[SS_EXEC_CONFIRMED] = bool(ss.get("tool6_exec_summary_approved", False))
+
     ss.setdefault(SS_EXEC_AUTO, "")
     ss.setdefault(SS_EXEC_HASH, "")
-    ss.setdefault(SS_EXEC_APPROVED, False)
 
+    ss.setdefault(SS_EXEC_CONFIRMED, False)
     ss.setdefault(SS_EXEC_DIRTY, False)
-    if not isinstance(ss[SS_EXEC_DIRTY], bool):
-        ss[SS_EXEC_DIRTY] = False
 
     ss.setdefault(SS_EXEC_STYLE, UIConfig.DEFAULT_STYLE)
     ss.setdefault(SS_EXEC_TONE, UIConfig.DEFAULT_TONE)
@@ -645,11 +645,18 @@ def _ensure_state(ctx: Tool6Context) -> None:
     if ss[SS_EXEC_TRANSLATE_SOURCE] not in ("Edited", "Auto"):
         ss[SS_EXEC_TRANSLATE_SOURCE] = "Edited"
 
+    ss.setdefault(SS_STEP6_READY, False)
+    ss.setdefault(SS_NAV_NEXT_REQUESTED, False)
+
+    # RAW/FINAL init (safe)
+    ss.setdefault(SS_EXEC_TEXT_RAW, "")
+    ss.setdefault(SS_EXEC_TEXT, "")
+
     row = ctx.row or {}
     overrides = ss.get(SS_GENERAL_OVERRIDES, {}) or {}
 
-    # default selection if first time only
-    if ss.get(SS_EXEC_ISSUES_SELECTED) == [] and (SS_EXEC_HASH not in ss or not ss.get(SS_EXEC_HASH)):
+    # default issues selection only once
+    if ss.get(SS_EXEC_ISSUES_SELECTED) == [] and (not ss.get(SS_EXEC_HASH)):
         ss[SS_EXEC_ISSUES_SELECTED] = _detect_issue_labels(row, overrides)
 
     # fingerprint + regen only when changed
@@ -676,26 +683,35 @@ def _ensure_state(ctx: Tool6Context) -> None:
         ss[SS_EXEC_HASH] = h
         ss[SS_EXEC_AUTO] = auto_text
 
-        # don't clobber user's edits
-        if (not bool(ss.get(SS_EXEC_DIRTY))) and (ss.get(SS_EXEC_APPROVED) is False):
-            ss[SS_EXEC_TEXT] = auto_text
+        # initialize RAW/FNAL if empty AND not dirty/confirmed
+        if (not bool(ss.get(SS_EXEC_DIRTY))) and (ss.get(SS_EXEC_CONFIRMED) is False):
+            if not _s(ss.get(SS_EXEC_TEXT_RAW)):
+                ss[SS_EXEC_TEXT_RAW] = auto_text
+            if not _s(ss.get(SS_EXEC_TEXT)):
+                ss[SS_EXEC_TEXT] = _split_paragraphs(auto_text)
+
+    # Ensure FINAL follows RAW on first load (only if user hasn't typed)
+    if (not _s(ss.get(SS_EXEC_TEXT))) and _s(ss.get(SS_EXEC_TEXT_RAW)):
+        ss[SS_EXEC_TEXT] = _split_paragraphs(ss.get(SS_EXEC_TEXT_RAW))
 
 
 # =============================================================================
-# UI: alignment + card system (fixes)
+# UI: CSS once + card system
 # =============================================================================
-def _inject_ui_css() -> None:
+def _inject_ui_css_once() -> None:
+    ss = st.session_state
+    if ss.get(SS_S6_CSS_DONE):
+        return
+
     st.markdown(
         f"""
 <style>
-/* Center the whole step and keep consistent width */
 .t6-s6-wrap {{
   max-width: {UIConfig.MAX_CONTENT_WIDTH_PX}px;
   margin-left: auto;
   margin-right: auto;
 }}
 
-/* Make Streamlit columns top-aligned and consistent */
 div[data-testid="stHorizontalBlock"] {{
   align-items: stretch;
 }}
@@ -705,7 +721,6 @@ div[data-testid="column"] {{
   align-self: stretch;
 }}
 
-/* Responsive columns: stack on mobile */
 @media (max-width: {UIConfig.MOBILE_BREAKPOINT_PX}px) {{
   div[data-testid="column"] {{
     width: 100% !important;
@@ -717,7 +732,6 @@ div[data-testid="column"] {{
   }}
 }}
 
-/* Sticky toolbar */
 .t6-s6-sticky {{
   position: sticky;
   top: 0.25rem;
@@ -730,15 +744,12 @@ div[data-testid="column"] {{
   margin-bottom: 0.85rem;
 }}
 
-/* Card */
 .t6-s6-card {{
   border: 1px solid rgba(255,255,255,0.12);
   border-radius: 14px;
   padding: 14px;
   background: rgba(255,255,255,0.02);
   margin-bottom: 12px;
-
-  /* alignment: ensure full height in column */
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -764,8 +775,6 @@ div[data-testid="column"] {{
   font-size: 0.84rem;
   opacity: 0.9;
 }}
-
-/* Prevent markdown titles from adding extra top spacing inside cards */
 .t6-s6-card .stMarkdown p {{
   margin-top: 0.2rem;
   margin-bottom: 0.2rem;
@@ -774,6 +783,7 @@ div[data-testid="column"] {{
 """,
         unsafe_allow_html=True,
     )
+    ss[SS_S6_CSS_DONE] = True
 
 
 def _card(title: str, body_fn, *, help_text: str = "") -> None:
@@ -786,95 +796,98 @@ def _card(title: str, body_fn, *, help_text: str = "") -> None:
 
 
 # =============================================================================
-# Fragments (speed): toolbar, editor, preview, controls
+# UI blocks (no fragments) - stable layout
 # =============================================================================
-@st.fragment
 def _sticky_bar(ctx: Tool6Context) -> None:
     ss = st.session_state
 
     st.markdown("<div class='t6-s6-sticky'>", unsafe_allow_html=True)
-    a1, a2, a3, a4, a5 = st.columns([1.25, 1.25, 1.25, 1.4, 1.2], gap="small")
+    a1, a2, a3, a4, a5, a6 = st.columns([1.15, 1.15, 1.15, 1.35, 1.05, 1.15], gap="small")
 
     with a1:
         if st.button("Regenerate", use_container_width=True, key=_key("regen")):
             ss[SS_EXEC_HASH] = ""
             ss[SS_EXEC_DIRTY] = False
-            ss[SS_EXEC_APPROVED] = False
-            _ensure_state(ctx)
+            ss[SS_EXEC_CONFIRMED] = False
+            # Reset RAW to auto on regenerate (safe because this happens before widget is instantiated on rerun)
+            ss[SS_EXEC_TEXT_RAW] = ""
+            ss[SS_EXEC_TEXT] = ""
             st.rerun()
 
     with a2:
         if st.button("Reset to Auto", use_container_width=True, key=_key("reset_auto")):
-            ss[SS_EXEC_TEXT] = ss.get(SS_EXEC_AUTO, "")
+            ss[SS_EXEC_TEXT_RAW] = ss.get(SS_EXEC_AUTO, "")
+            ss[SS_EXEC_TEXT] = _split_paragraphs(ss.get(SS_EXEC_AUTO, ""))
             ss[SS_EXEC_DIRTY] = False
-            ss[SS_EXEC_APPROVED] = False
+            ss[SS_EXEC_CONFIRMED] = False
             st.rerun()
 
     with a3:
-        if st.button("Show Auto Text", use_container_width=True, key=_key("show_auto")):
-            with st.popover("Auto text", use_container_width=True):
-                st.code(ss.get(SS_EXEC_AUTO, ""), language="text")
+        with st.popover("Show Auto Text", use_container_width=True):
+            st.code(ss.get(SS_EXEC_AUTO, ""), language="text")
 
     with a4:
-        ss[SS_EXEC_SHOW_DIFF] = st.toggle(
+        st.toggle(
             "Show Diff",
             value=bool(ss.get(SS_EXEC_SHOW_DIFF, False)),
-            key=_key("show_diff"),
+            key=SS_EXEC_SHOW_DIFF,
         )
 
     with a5:
-        ss[SS_EXEC_APPROVED] = st.toggle(
-            "Approved",
-            value=bool(ss.get(SS_EXEC_APPROVED)),
-            key=_key("approved"),
+        st.toggle(
+            "Confirmed",
+            key=SS_EXEC_CONFIRMED,
+            help="When confirmed, this step is locked and can proceed to next step.",
+            on_change=st.rerun,
         )
 
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-@st.fragment
 def _draft_tab(ctx: Tool6Context) -> None:
     ss = st.session_state
 
     left, right = st.columns([1.05, 0.95], gap="large")
+    locked = bool(ss.get(SS_EXEC_CONFIRMED, False))
 
     def _editor_body():
-        # pick height based on viewport-ish hint (we don't truly know client width; keep stable)
-        height = UIConfig.EDITOR_HEIGHT_DESKTOP
-        if st.session_state.get("t6_is_mobile") is True:
-            height = UIConfig.EDITOR_HEIGHT_MOBILE
+        height = UIConfig.EDITOR_HEIGHT_MOBILE if st.session_state.get("t6_is_mobile") is True else UIConfig.EDITOR_HEIGHT_DESKTOP
 
         edited_raw = st.text_area(
             "Executive Summary text",
-            value=ss.get(SS_EXEC_TEXT, ""),
+            value=ss.get(SS_EXEC_TEXT_RAW, ""),
             height=height,
-            key=_key("editor"),
+            key=SS_EXEC_TEXT_RAW,  # widget key (do not programmatically assign after instantiation)
             help="Keep blank lines between paragraphs. The report preserves paragraph structure.",
+            disabled=locked,
         )
-        edited = _split_paragraphs(edited_raw)
-        ss[SS_EXEC_TEXT] = edited
 
-        auto = _split_paragraphs(ss.get(SS_EXEC_AUTO, ""))
-        ss[SS_EXEC_DIRTY] = (edited != auto)
+        edited_norm = _split_paragraphs(edited_raw)
 
-        words = len([w for w in re.split(r"\s+", edited) if w.strip()]) if edited else 0
-        chars = len(edited) if edited else 0
+        # SAFE: update FINAL (not the widget key)
+        ss[SS_EXEC_TEXT] = edited_norm
+
+        auto_norm = _split_paragraphs(ss.get(SS_EXEC_AUTO, ""))
+        ss[SS_EXEC_DIRTY] = (edited_norm != auto_norm)
+
+        words = len([w for w in re.split(r"\s+", edited_norm) if w.strip()]) if edited_norm else 0
+        chars = len(edited_norm) if edited_norm else 0
         st.markdown(f"<div class='t6-s6-subtle'>Words: {words} · Characters: {chars}</div>", unsafe_allow_html=True)
 
-        if bool(ss.get(SS_EXEC_SHOW_DIFF)):
+        if bool(ss.get(SS_EXEC_SHOW_DIFF, False)):
             st.divider()
-            st.code(_simple_diff(ss.get(SS_EXEC_AUTO, ""), edited), language="text")
+            st.code(_simple_diff(ss.get(SS_EXEC_AUTO, ""), edited_norm), language="text")
 
     def _preview_body():
         st.caption("This preview approximates the report reading flow.")
         _render_preview(ss.get(SS_EXEC_TEXT, ""), fmt=_s(ss.get(SS_EXEC_FORMAT)))
 
         st.divider()
-        if ss.get(SS_EXEC_APPROVED):
-            status_card("Approved", "This exact text will be used in the generated DOCX.", level="success")
+        if ss.get(SS_EXEC_CONFIRMED):
+            status_card("Confirmed", "This exact text will be used in the generated DOCX.", level="success")
         else:
             if ss.get(SS_EXEC_DIRTY):
-                status_card("Edited (not approved)", "You edited the text. Approve when final.", level="warning")
+                status_card("Edited (not confirmed)", "You edited the text. Confirm when final.", level="warning")
             else:
                 status_card("Auto draft", "This matches the latest auto-generated version.", level="info")
 
@@ -884,7 +897,6 @@ def _draft_tab(ctx: Tool6Context) -> None:
         _card("Live Preview", _preview_body, help_text="Preview updates with your edits.")
 
 
-@st.fragment
 def _insights_tab(ctx: Tool6Context) -> None:
     ss = st.session_state
     row = ctx.row or {}
@@ -912,7 +924,7 @@ def _insights_tab(ctx: Tool6Context) -> None:
         st.markdown(f"<div class='t6-s6-pill'>Location: {loc or '—'}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='t6-s6-pill'>Project: {project_name or '—'}</div>", unsafe_allow_html=True)
         st.markdown(f"<div class='t6-s6-pill'>Status: {status_raw or '—'}</div>", unsafe_allow_html=True)
-        st.markdown(f"<div class='t6-s6-pill'>Approved: {'Yes' if ss.get(SS_EXEC_APPROVED) else 'No'}</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='t6-s6-pill'>Confirmed: {'Yes' if ss.get(SS_EXEC_CONFIRMED) else 'No'}</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
 
     def _issues_body():
@@ -937,31 +949,33 @@ def _insights_tab(ctx: Tool6Context) -> None:
     _card("Work progress (Step 5)", _work_body)
 
 
-@st.fragment
 def _controls_tab(ctx: Tool6Context) -> None:
     ss = st.session_state
     row = ctx.row or {}
     overrides = ss.get(SS_GENERAL_OVERRIDES, {}) or {}
     detected = _detect_issue_labels(row, overrides)
 
+    locked = bool(ss.get(SS_EXEC_CONFIRMED, False))
+
     def _tpl_body():
         opts = list(TEMPLATE_LIBRARY.keys())
         t1, t2, t3 = st.columns([2.2, 1.0, 1.0], gap="small")
 
         with t1:
-            tpl_name = st.selectbox(
+            ss[SS_EXEC_TEMPLATE] = st.selectbox(
                 "Choose a template",
                 options=opts,
                 index=_safe_index(opts, _s(ss.get(SS_EXEC_TEMPLATE)), UIConfig.DEFAULT_TEMPLATE),
                 key=_key("tpl_name"),
+                disabled=locked,
             )
-            ss[SS_EXEC_TEMPLATE] = tpl_name
 
         with t2:
-            if st.button("Apply Template", use_container_width=True, key=_key("tpl_apply")):
+            if st.button("Apply Template", use_container_width=True, key=_key("tpl_apply"), disabled=locked):
                 _apply_template(ctx, ss[SS_EXEC_TEMPLATE])
-                _ensure_state(ctx)
-                ss[SS_EXEC_TEXT] = ss.get(SS_EXEC_AUTO, "")
+                # Apply immediately to RAW+FINAL (safe because rerun re-instantiates widgets)
+                ss[SS_EXEC_TEXT_RAW] = ss.get(SS_EXEC_AUTO, "")
+                ss[SS_EXEC_TEXT] = _split_paragraphs(ss.get(SS_EXEC_AUTO, ""))
                 st.rerun()
 
         with t3:
@@ -985,6 +999,7 @@ def _controls_tab(ctx: Tool6Context) -> None:
                 options=style_opts,
                 index=_safe_index(style_opts, _s(ss.get(SS_EXEC_STYLE)), UIConfig.DEFAULT_STYLE),
                 key=_key("style"),
+                disabled=locked,
             )
         with c2:
             ss[SS_EXEC_TONE] = st.selectbox(
@@ -992,6 +1007,7 @@ def _controls_tab(ctx: Tool6Context) -> None:
                 options=tone_opts,
                 index=_safe_index(tone_opts, _s(ss.get(SS_EXEC_TONE)), UIConfig.DEFAULT_TONE),
                 key=_key("tone"),
+                disabled=locked,
             )
         with c3:
             ss[SS_EXEC_FORMAT] = st.selectbox(
@@ -999,6 +1015,7 @@ def _controls_tab(ctx: Tool6Context) -> None:
                 options=fmt_opts,
                 index=_safe_index(fmt_opts, _s(ss.get(SS_EXEC_FORMAT)), UIConfig.DEFAULT_FORMAT),
                 key=_key("format"),
+                disabled=locked,
             )
 
         s1, s2 = st.columns([2.2, 1.0], gap="small")
@@ -1010,18 +1027,23 @@ def _controls_tab(ctx: Tool6Context) -> None:
                 options=opts,
                 default=selected,
                 key=_key("issues_sel"),
+                disabled=locked,
             )
         with s2:
             ss[SS_EXEC_INCLUDE_WORK] = st.toggle(
                 "Include Step 5 summary",
                 value=bool(ss.get(SS_EXEC_INCLUDE_WORK, UIConfig.DEFAULT_INCLUDE_WORK)),
                 key=_key("include_work"),
+                disabled=locked,
             )
 
-        # Apply -> regenerate only when user asks (fastest behavior)
-        if st.button("Update Auto Draft (apply controls)", use_container_width=True, key=_key("apply_controls")):
+        if st.button("Update Auto Draft (apply controls)", use_container_width=True, key=_key("apply_controls"), disabled=locked):
             ss[SS_EXEC_HASH] = ""
-            _ensure_state(ctx)
+            # regenerate in next run then sync RAW+FINAL from auto if not dirty
+            ss[SS_EXEC_DIRTY] = False
+            ss[SS_EXEC_CONFIRMED] = False
+            ss[SS_EXEC_TEXT_RAW] = ""
+            ss[SS_EXEC_TEXT] = ""
             st.rerun()
 
         with st.expander("Preview auto text", expanded=False):
@@ -1037,6 +1059,7 @@ def _controls_tab(ctx: Tool6Context) -> None:
                 options=src_opts,
                 index=_safe_index(src_opts, _s(ss.get(SS_EXEC_TRANSLATE_SOURCE)), "Edited"),
                 key=_key("tr_source"),
+                disabled=locked,
             )
         with tr2:
             tgt_opts = UIConfig.TRANSLATE_TARGETS
@@ -1045,21 +1068,24 @@ def _controls_tab(ctx: Tool6Context) -> None:
                 options=tgt_opts,
                 index=_safe_index(tgt_opts, _s(ss.get(SS_EXEC_TRANSLATE_TARGET)), "Persian/Dari"),
                 key=_key("tr_target"),
+                disabled=locked,
             )
         with tr3:
-            if st.button("Translate Now", use_container_width=True, key=_key("tr_now")):
+            if st.button("Translate Now", use_container_width=True, key=_key("tr_now"), disabled=locked):
                 source_text = ss.get(SS_EXEC_TEXT, "") if ss[SS_EXEC_TRANSLATE_SOURCE] == "Edited" else ss.get(SS_EXEC_AUTO, "")
                 translated, warn = _translate_text(ctx, source_text, ss[SS_EXEC_TRANSLATE_TARGET])
 
                 if warn:
                     status_card("Translation not configured", warn, level="warning")
                 else:
-                    ss[SS_EXEC_TEXT] = translated
+                    # Apply translation into RAW+FINAL (safe via rerun)
+                    ss[SS_EXEC_TEXT_RAW] = translated
+                    ss[SS_EXEC_TEXT] = _split_paragraphs(translated)
                     ss[SS_EXEC_DIRTY] = True
-                    ss[SS_EXEC_APPROVED] = False
+                    ss[SS_EXEC_CONFIRMED] = False
 
                     gi = ss.get(SS_GENERAL_OVERRIDES, {}) or {}
-                    gi[f"Executive Summary Text ({ss[SS_EXEC_TRANSLATE_TARGET]})"] = translated
+                    gi[f"Executive Summary Text ({ss[SS_EXEC_TRANSLATE_TARGET]})"] = ss[SS_EXEC_TEXT]
                     ss[SS_GENERAL_OVERRIDES] = gi
                     st.rerun()
 
@@ -1082,17 +1108,15 @@ def _controls_tab(ctx: Tool6Context) -> None:
 # =============================================================================
 def render_step(ctx: Tool6Context) -> bool:
     """
-    Step 6: Executive Summary
-    - generation only when fingerprint changes
-    - card-based UI
-    - fragments isolate rerenders (toolbar/editor/preview/controls)
-    - never overwrite user edits unless explicit actions
+    Step 6: Executive Summary (aligned with Steps 7/8/9)
+    - Confirmed gating for Next
+    - Stable layout (no fragments)
+    - FIX: avoid StreamlitAPIException by separating widget key (RAW) from programmatic key (FINAL)
     """
-    _inject_ui_css()
+    _inject_ui_css_once()
     _ensure_state(ctx)
     ss = st.session_state
 
-    # Center wrapper for consistent alignment across all sections/tabs
     st.markdown("<div class='t6-s6-wrap'>", unsafe_allow_html=True)
 
     with st.container(border=True):
@@ -1106,32 +1130,33 @@ def render_step(ctx: Tool6Context) -> bool:
         with tab_controls:
             _controls_tab(ctx)
 
-        # Final save (always)
-        edited_final = _split_paragraphs(ss.get(SS_EXEC_TEXT, ""))
-        ss[SS_EXEC_TEXT] = edited_final
-
-        if not edited_final:
-            status_card(
-                "Empty text",
-                "Executive Summary is empty. Please regenerate, apply a template, or write your text.",
-                level="warning",
-            )
-            st.markdown("</div>", unsafe_allow_html=True)
-            return False
+        # FINAL value already synced in _draft_tab from RAW
+        final_text = _split_paragraphs(_s(ss.get(SS_EXEC_TEXT)))
 
         # Save to overrides for report builder
         gi = ss.get(SS_GENERAL_OVERRIDES, {}) or {}
-        gi["Executive Summary Text"] = edited_final
+        gi["Executive Summary Text"] = final_text
         ss[SS_GENERAL_OVERRIDES] = gi
 
+        # Gate readiness
+        confirmed = bool(ss.get(SS_EXEC_CONFIRMED, False))
+        has_text = bool(final_text)
+
+        ready = confirmed and has_text
+        ss[SS_STEP6_READY] = ready
+
         st.divider()
-        if ss.get(SS_EXEC_APPROVED):
-            status_card("Approved", "This exact text will be used in the generated DOCX.", level="success")
-        else:
+        if not has_text:
+            status_card("Empty text", "Executive Summary is empty. Write text or reset/regenerate.", level="warning")
+        elif not confirmed:
             if ss.get(SS_EXEC_DIRTY):
-                status_card("Draft updated", "You edited/translated the text. Approve when final.", level="warning")
+                status_card("Edited (not confirmed)", "You edited/translated the text. Confirm when final to continue.", level="warning")
             else:
-                status_card("Auto draft", "This matches the latest auto-generated version.", level="info")
+                status_card("Auto draft (not confirmed)", "This matches the latest auto-generated version. Confirm to continue.", level="warning")
+        else:
+            status_card("Confirmed", "This exact text will be used in the generated DOCX.", level="success")
 
     st.markdown("</div>", unsafe_allow_html=True)
-    return True
+
+    # IMPORTANT: do NOT allow next unless confirmed + non-empty
+    return bool(ss.get(SS_STEP6_READY, False))
