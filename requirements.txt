@@ -1,38 +1,18 @@
-streamlit
-pandas
-gspread
-google-auth
-python-docx
-pymupdf
-pillow
-streamlit-js-eval
 deep-translator
-google-api-python-client
-google-auth
 google-auth-httplib2
 google-auth-oauthlib
-google-api-python-client
-streamlit-drawable-canvas
 # =========================
 # Core
 # =========================
 python-docx
 pandas
 pillow
-
 # =========================
 # Google / Sheets / Auth
 # =========================
 gspread
 google-auth
 google-api-python-client
-
-# =========================
-# PDF / Windows
-# =========================
-pymupdf
-pywin32
-
 # =========================
 # Streamlit (Canvas Compatible)
 # =========================
