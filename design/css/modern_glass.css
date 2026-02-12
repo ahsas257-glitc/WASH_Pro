@@ -691,3 +691,102 @@ div[data-testid="stDataFrame"] *{
     margin: 0 auto !important;
   }
 }
+/* ============================================================
+   Cards.py structural classes (edge + thin borders coverage)
+   ============================================================ */
+
+/* Outer structural wrapper (keeps rounded clipping) */
+.gc-card{
+  position: relative !important;
+  overflow: hidden !important;     /* ✅ مهم: کلیپ کردن لبه‌ها */
+  isolation: isolate !important;   /* ✅ جلوگیری از bleed */
+}
+
+/* Inner wrapper for padding consistency */
+.gc-inner{
+  padding: 0 !important;
+}
+
+/* Header */
+.gc-header{
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 0.10rem;
+}
+.gc-header-left{
+  min-width: 0;
+}
+.gc-title{
+  margin: 0 0 0.40rem 0 !important;
+  color: var(--text-primary) !important;
+  font-weight: 820 !important;
+  font-size: 1.22rem !important;
+  line-height: 1.25 !important;
+}
+.gc-subtitle{
+  margin: 0 !important;
+  color: var(--text-secondary) !important;
+  opacity: 0.92 !important;
+  font-size: 0.96rem !important;
+  line-height: 1.45 !important;
+}
+.gc-header-right{
+  flex: 0 0 auto;
+  padding-top: 0.10rem;
+}
+.gc-chip{
+  display: inline-flex;
+  align-items: center;
+  padding: 0.40rem 0.90rem;
+  border-radius: 999px;
+  background: var(--glass-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 0.90rem;
+  font-weight: 700;
+  box-shadow: var(--shadow-light);
+  backdrop-filter: blur(var(--blur-light)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.2);
+}
+
+/* Divider */
+.gc-divider{
+  height: 1px;
+  width: 100%;
+  margin: 0.85rem 0 1.05rem 0;
+  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+  opacity: 0.9;
+}
+
+/* Body spacing */
+.gc-body{
+  margin-top: 0.95rem;
+}
+
+/* Variants: keep them token-based */
+.pure-glass-card.transparent{
+  background: var(--glass-tertiary) !important;
+}
+.pure-glass-card.frosted{
+  backdrop-filter: blur(calc(var(--blur-heavy) + 6px)) saturate(1.55) !important;
+  -webkit-backdrop-filter: blur(calc(var(--blur-heavy) + 6px)) saturate(1.55) !important;
+}
+.pure-glass-card.tight{
+  padding: 1.10rem !important;
+}
+.pure-glass-card.soft{
+  box-shadow: var(--shadow-light) !important;
+}
+
+/* Extra: avoid inner wrappers creating borders/backgrounds */
+.gc-card .element-container,
+.gc-card .stMarkdown,
+.gc-card .stDataFrame,
+.gc-card .stMetric{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
