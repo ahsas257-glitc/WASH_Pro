@@ -13,6 +13,7 @@ except Exception:  # pragma: no cover
     pd = None  # type: ignore
 
 from src.Tools.utils.types import Tool6Context
+from design.components.cards import pure_glass_panel
 from design.components.base_tool_ui import card_close, status_card
 
 
@@ -436,11 +437,6 @@ def _inject_ui_css_once() -> None:
     st.markdown(
         f"""
 <style>
-.t6-s8-wrap {{
-  max-width: {UIConfig.MAX_CONTENT_WIDTH_PX}px;
-  margin-left: auto;
-  margin-right: auto;
-}}
 
 div[data-testid="stHorizontalBlock"] {{ align-items: stretch; }}
 div[data-testid="column"] {{
@@ -449,19 +445,6 @@ div[data-testid="column"] {{
   align-self: stretch;
 }}
 [data-testid="stVerticalBlock"] {{ gap: 0.70rem; }}
-
-.t6-card {{
-  border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 14px;
-  padding: 14px;
-  background: rgba(255,255,255,0.02);
-  margin: 0.25rem 0 0.75rem 0;
-}}
-.t6-card-title {{
-  font-weight: 700;
-  font-size: 0.98rem;
-  margin-bottom: 0.35rem;
-}}
 .t6-subtle {{ opacity: 0.85; font-size: 0.92rem; }}
 
 .t6-sticky {{
@@ -521,12 +504,10 @@ div[data-testid="stDataEditor"] [data-testid="stDataFrameResizable"] {{
 
 
 def _card(title: str, body_fn, *, help_text: str = "") -> None:
-    st.markdown("<div class='t6-card'>", unsafe_allow_html=True)
-    st.markdown(f"<div class='t6-card-title'>{title}</div>", unsafe_allow_html=True)
-    if help_text:
-        st.caption(help_text)
-    body_fn()
-    st.markdown("</div>", unsafe_allow_html=True)
+    # Unified card wrapper (consistent edges + theme tokens)
+    with pure_glass_panel(title=title, subtitle=help_text, variant="default", divider=False):
+        body_fn()
+
 
 
 # =============================================================================
