@@ -1,21 +1,25 @@
 /* ============================================================
-   Modern Glassmorphism Theme for Streamlit (Refined)
-   - Clean & professional
-   - Full Dark/Light support
-   - Fixes: inputs, password eye, number spinner (+/-), grey panels
-   - Safer typography (no global div coloring)
+   Modern Glassmorphism Theme for Streamlit (Unified + Robust)
+   Goals:
+   - Consistent cards across ALL pages/steps
+   - Column stretch + equal-height cards
+   - Full widget coverage (inputs, toggles, uploaders, tables)
+   - Dark/Light stable tokens
    ============================================================ */
 
-:root {
+/* ------------------------------
+   0) Tokens
+--------------------------------*/
+:root{
   --radius-lg: 24px;
   --radius-md: 18px;
   --radius-sm: 14px;
   --radius-xs: 10px;
 
-  --shadow-heavy: 0 20px 60px rgba(0, 0, 0, 0.25);
-  --shadow-medium: 0 12px 40px rgba(0, 0, 0, 0.18);
-  --shadow-light: 0 6px 24px rgba(0, 0, 0, 0.12);
-  --shadow-glow: 0 0 40px rgba(100, 150, 255, 0.3);
+  --shadow-heavy: 0 20px 60px rgba(0,0,0,0.25);
+  --shadow-medium: 0 12px 40px rgba(0,0,0,0.18);
+  --shadow-light: 0 6px 24px rgba(0,0,0,0.12);
+  --shadow-glow: 0 0 40px rgba(100,150,255,0.30);
 
   --blur-heavy: 24px;
   --blur-medium: 18px;
@@ -23,56 +27,57 @@
 
   --transition-fast: 0.18s ease;
   --transition-medium: 0.28s ease;
-  --transition-slow: 0.5s ease;
 
-  --accent-blue: rgba(88, 153, 255, 0.8);
+  /* Accent */
+  --accent-blue: rgba(88,153,255,0.85);
 
-  /* Light */
+  /* Light BG */
   --bg-light:
-    radial-gradient(circle at 20% 10%, rgba(114, 165, 255, 0.2) 0%, transparent 40%),
-    radial-gradient(circle at 80% 30%, rgba(255, 170, 210, 0.15) 0%, transparent 40%),
+    radial-gradient(circle at 20% 10%, rgba(114,165,255,0.20) 0%, transparent 40%),
+    radial-gradient(circle at 80% 30%, rgba(255,170,210,0.15) 0%, transparent 40%),
     linear-gradient(135deg, #f0f5ff 0%, #e8eeff 50%, #f8fbff 100%);
 
-  --glass-light-primary: rgba(255, 255, 255, 0.72);
-  --glass-light-secondary: rgba(255, 255, 255, 0.55);
-  --glass-light-tertiary: rgba(255, 255, 255, 0.35);
-
-  --border-light: rgba(0, 0, 0, 0.08);
-  --border-light-strong: rgba(0, 0, 0, 0.15);
-
-  --text-light-primary: rgba(0, 0, 0, 0.95);
-  --text-light-secondary: rgba(0, 0, 0, 0.75);
-  --text-light-tertiary: rgba(0, 0, 0, 0.55);
-  --text-light-accent: #0066ff;
-
-  --button-light-primary: linear-gradient(135deg, rgba(88, 153, 255, 0.92), rgba(125, 100, 255, 0.92));
-  --button-light-hover: linear-gradient(135deg, rgba(100, 170, 255, 0.96), rgba(140, 120, 255, 0.96));
-
-  /* Dark */
+  /* Dark BG */
   --bg-dark:
-    radial-gradient(circle at 20% 10%, rgba(88, 153, 255, 0.15) 0%, transparent 40%),
-    radial-gradient(circle at 80% 30%, rgba(255, 85, 170, 0.10) 0%, transparent 40%),
+    radial-gradient(circle at 20% 10%, rgba(88,153,255,0.15) 0%, transparent 40%),
+    radial-gradient(circle at 80% 30%, rgba(255,85,170,0.10) 0%, transparent 40%),
     linear-gradient(135deg, #0a0f1a 0%, #121828 50%, #0c1120 100%);
 
-  --glass-dark-primary: rgba(255, 255, 255, 0.12);
-  --glass-dark-secondary: rgba(255, 255, 255, 0.085);
-  --glass-dark-tertiary: rgba(255, 255, 255, 0.055);
+  /* Glass */
+  --glass-light-primary: rgba(255,255,255,0.72);
+  --glass-light-secondary: rgba(255,255,255,0.55);
+  --glass-light-tertiary: rgba(255,255,255,0.35);
 
-  --border-dark: rgba(255, 255, 255, 0.10);
-  --border-dark-strong: rgba(255, 255, 255, 0.18);
+  --glass-dark-primary: rgba(255,255,255,0.12);
+  --glass-dark-secondary: rgba(255,255,255,0.085);
+  --glass-dark-tertiary: rgba(255,255,255,0.055);
 
-  --text-dark-primary: rgba(255, 255, 255, 0.98);
-  --text-dark-secondary: rgba(255, 255, 255, 0.78);
-  --text-dark-tertiary: rgba(255, 255, 255, 0.58);
+  /* Borders */
+  --border-light: rgba(0,0,0,0.08);
+  --border-light-strong: rgba(0,0,0,0.15);
+  --border-dark: rgba(255,255,255,0.10);
+  --border-dark-strong: rgba(255,255,255,0.18);
+
+  /* Text */
+  --text-light-primary: rgba(0,0,0,0.95);
+  --text-light-secondary: rgba(0,0,0,0.75);
+  --text-light-tertiary: rgba(0,0,0,0.55);
+  --text-light-accent: #0066ff;
+
+  --text-dark-primary: rgba(255,255,255,0.98);
+  --text-dark-secondary: rgba(255,255,255,0.78);
+  --text-dark-tertiary: rgba(255,255,255,0.58);
   --text-dark-accent: #5a9bff;
 
-  --button-dark-primary: linear-gradient(135deg, rgba(88, 153, 255, 0.72), rgba(125, 100, 255, 0.72));
-  --button-dark-hover: linear-gradient(135deg, rgba(100, 170, 255, 0.82), rgba(140, 120, 255, 0.82));
+  /* Buttons */
+  --button-light-primary: linear-gradient(135deg, rgba(88,153,255,0.92), rgba(125,100,255,0.92));
+  --button-light-hover:   linear-gradient(135deg, rgba(100,170,255,0.96), rgba(140,120,255,0.96));
 
-  /* Unified "glass field" tokens */
+  --button-dark-primary:  linear-gradient(135deg, rgba(88,153,255,0.72), rgba(125,100,255,0.72));
+  --button-dark-hover:    linear-gradient(135deg, rgba(100,170,255,0.82), rgba(140,120,255,0.82));
+
+  /* Fields */
   --field-radius: 18px;
-
-  /* ✅ base field colors will be overridden by theme below */
   --field-bg: rgba(255,255,255,0.06);
   --field-bg-focus: rgba(255,255,255,0.09);
   --field-border: rgba(255,255,255,0.14);
@@ -80,42 +85,69 @@
   --field-shadow: 0 10px 28px rgba(0,0,0,0.22);
   --field-shadow-focus: 0 0 0 3px rgba(88,153,255,0.18), 0 14px 34px rgba(0,0,0,0.25);
 
-  /* ✅ spinner button tokens (theme-aware) */
+  /* Spinner buttons */
   --spin-btn-bg: rgba(255,255,255,0.07);
   --spin-btn-bg-hover: rgba(255,255,255,0.12);
   --spin-btn-border: rgba(255,255,255,0.10);
+
+  /* Card padding unified */
+  --card-pad: 1.35rem;
 }
 
-/* Theme mapping */
-html[data-theme="light"], body.light {
+/* ------------------------------
+   1) Theme mapping
+--------------------------------*/
+html[data-theme="light"], body.light{
   --bg: var(--bg-light);
+
   --glass-primary: var(--glass-light-primary);
   --glass-secondary: var(--glass-light-secondary);
   --glass-tertiary: var(--glass-light-tertiary);
+
   --border: var(--border-light);
   --border-strong: var(--border-light-strong);
+
   --text-primary: var(--text-light-primary);
   --text-secondary: var(--text-light-secondary);
   --text-tertiary: var(--text-light-tertiary);
   --text-accent: var(--text-light-accent);
+
   --button-primary: var(--button-light-primary);
   --button-hover: var(--button-light-hover);
 
-  /* ✅ field becomes readable in light */
-  --field-bg: rgba(255,255,255,0.75);
-  --field-bg-focus: rgba(255,255,255,0.92);
+  --field-bg: rgba(255,255,255,0.78);
+  --field-bg-focus: rgba(255,255,255,0.94);
   --field-border: rgba(0,0,0,0.10);
   --field-border-focus: rgba(88,153,255,0.55);
   --field-shadow: 0 10px 24px rgba(0,0,0,0.10);
   --field-shadow-focus: 0 0 0 3px rgba(88,153,255,0.20), 0 14px 30px rgba(0,0,0,0.12);
 
-  /* ✅ spinner buttons in light */
   --spin-btn-bg: rgba(0,0,0,0.05);
   --spin-btn-bg-hover: rgba(0,0,0,0.08);
   --spin-btn-border: rgba(0,0,0,0.10);
 }
 
-html[data-theme="dark"], body.dark {
+html[data-theme="dark"], body.dark{
+  --bg: var(--bg-dark);
+
+  --glass-primary: var(--glass-dark-primary);
+  --glass-secondary: var(--glass-dark-secondary);
+  --glass-tertiary: var(--glass-dark-tertiary);
+
+  --border: var(--border-dark);
+  --border-strong: var(--border-dark-strong);
+
+  --text-primary: var(--text-dark-primary);
+  --text-secondary: var(--text-dark-secondary);
+  --text-tertiary: var(--text-dark-tertiary);
+  --text-accent: var(--text-dark-accent);
+
+  --button-primary: var(--button-dark-primary);
+  --button-hover: var(--button-dark-hover);
+}
+
+/* fallback */
+html:not([data-theme]){
   --bg: var(--bg-dark);
   --glass-primary: var(--glass-dark-primary);
   --glass-secondary: var(--glass-dark-secondary);
@@ -130,24 +162,10 @@ html[data-theme="dark"], body.dark {
   --button-hover: var(--button-dark-hover);
 }
 
-/* default if no theme attr */
-html:not([data-theme]) {
-  --bg: var(--bg-dark);
-  --glass-primary: var(--glass-dark-primary);
-  --glass-secondary: var(--glass-dark-secondary);
-  --glass-tertiary: var(--glass-dark-tertiary);
-  --border: var(--border-dark);
-  --border-strong: var(--border-dark-strong);
-  --text-primary: var(--text-dark-primary);
-  --text-secondary: var(--text-dark-secondary);
-  --text-tertiary: var(--text-dark-tertiary);
-  --text-accent: var(--text-dark-accent);
-  --button-primary: var(--button-dark-primary);
-  --button-hover: var(--button-dark-hover);
-}
-
-/* Base */
-.stApp {
+/* ------------------------------
+   2) App base + layout stability
+--------------------------------*/
+.stApp{
   background: var(--bg) !important;
   background-attachment: fixed !important;
   color: var(--text-primary) !important;
@@ -155,64 +173,76 @@ html:not([data-theme]) {
   transition: background var(--transition-medium) !important;
 }
 
-header[data-testid="stHeader"] {
+header[data-testid="stHeader"]{
   background: transparent !important;
   border-bottom: none !important;
 }
-
-footer {
-  visibility: hidden !important;
-  height: 0 !important;
-  padding: 0 !important;
-  margin: 0 !important;
+footer{
+  visibility:hidden !important;
+  height:0 !important;
+  padding:0 !important;
+  margin:0 !important;
 }
 
-/* ✅ Reduce top spacing (move content up) */
-.block-container {
-  padding-top: 0.6rem !important;
+/* container spacing */
+.block-container{
+  padding-top: 0.65rem !important;
   padding-left: 1.25rem !important;
   padding-right: 1.25rem !important;
   padding-bottom: 1.25rem !important;
   max-width: 100% !important;
 }
 
-/* Safer typography (NO global div coloring) */
-h1, h2, h3, h4, h5, h6 {
+/* ✅ Very important: consistent vertical rhythm across pages */
+[data-testid="stVerticalBlock"]{
+  gap: 0.70rem !important;
+}
+
+/* ✅ Columns: stretch children so cards align vertically */
+div[data-testid="stHorizontalBlock"]{ align-items: stretch !important; }
+div[data-testid="column"]{
+  display: flex !important;
+  flex-direction: column !important;
+  align-self: stretch !important;
+}
+div[data-testid="column"] > div{
+  width: 100% !important;
+}
+
+/* Typography */
+h1,h2,h3,h4,h5,h6{
   color: var(--text-primary) !important;
-  font-weight: 750 !important;
+  font-weight: 780 !important;
   letter-spacing: -0.01em !important;
 }
-p { color: var(--text-secondary) !important; }
-small, .stCaption, .stMarkdown small { color: var(--text-tertiary) !important; }
+p{ color: var(--text-secondary) !important; }
+small, .stCaption, .stMarkdown small{ color: var(--text-tertiary) !important; }
 
-/* ============================================================
-   ✅ Remove grey layers behind containers/expanders
-   ============================================================ */
-div[data-testid="stContainer"],
-div[data-testid="stExpander"],
+/* Links */
+a, a:visited{ color: var(--text-accent) !important; }
+
+/* ------------------------------
+   3) Remove Streamlit grey layers (but keep OUR cards)
+--------------------------------*/
 div[data-testid="stVerticalBlockBorderWrapper"],
-div[data-testid="stHorizontalBlock"],
-div[data-testid="stVerticalBlock"] {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}
-div[data-testid="stVerticalBlockBorderWrapper"] > div,
-div[data-testid="stContainer"] > div {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}
-details, details > summary {
+div[data-testid="stVerticalBlock"],
+div[data-testid="stHorizontalBlock"]{
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
 }
 
-/* ============================================================
-   Sidebar (cleaner typography + compact)
-   ============================================================ */
-section[data-testid="stSidebar"] {
+/* Expander outer wrappers */
+div[data-testid="stExpander"]{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* ------------------------------
+   4) Sidebar
+--------------------------------*/
+section[data-testid="stSidebar"]{
   background: var(--glass-primary) !important;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-lg) !important;
@@ -222,72 +252,113 @@ section[data-testid="stSidebar"] {
   margin: 0.8rem !important;
   transition: all var(--transition-medium) !important;
 }
-
-section[data-testid="stSidebar"] > div {
+section[data-testid="stSidebar"] > div{
   padding: 1.15rem 1.05rem !important;
   background: transparent !important;
 }
-
-section[data-testid="stSidebar"] * {
+section[data-testid="stSidebar"] *{
   font-size: 12.5px !important;
   line-height: 1.25 !important;
   color: var(--text-primary) !important;
 }
-
 section[data-testid="stSidebar"] h1,
 section[data-testid="stSidebar"] h2,
-section[data-testid="stSidebar"] h3 {
+section[data-testid="stSidebar"] h3{
   font-size: 14px !important;
   margin: 0.35rem 0 0.55rem 0 !important;
-  font-weight: 800 !important;
+  font-weight: 820 !important;
 }
-
-section[data-testid="stSidebar"] label {
+section[data-testid="stSidebar"] label{
   font-size: 12px !important;
   opacity: 0.86 !important;
 }
 
-/* ============================================================
-   Glass Cards
-   ✅ unify: glass-card + pure-glass-card same look
-   ============================================================ */
+/* ------------------------------
+   5) ✅ Unified Cards Everywhere
+   - glass-card / pure-glass-card
+   - t6-card (Step3/4)
+   - t6-rowcard, t6-box, t6-s7-card, t6-card (Step5/7/8)
+--------------------------------*/
 .glass-card,
-.pure-glass-card {
+.pure-glass-card,
+.t6-card,
+.t6-rowcard,
+.t6-box,
+.t6-s7-card,
+.t6-s8-wrap .t6-card,
+.t6-s10-sticky,
+.t6-s9-sticky{
   background: var(--glass-secondary) !important;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-md) !important;
   box-shadow: var(--shadow-medium) !important;
-  backdrop-filter: blur(var(--blur-medium)) saturate(1.3) !important;
-  -webkit-backdrop-filter: blur(var(--blur-medium)) saturate(1.3) !important;
-  padding: 1.6rem !important;
-  margin-bottom: 1.2rem !important;
+  backdrop-filter: blur(var(--blur-medium)) saturate(1.25) !important;
+  -webkit-backdrop-filter: blur(var(--blur-medium)) saturate(1.25) !important;
   transition: all var(--transition-medium) !important;
 }
+
+/* Default paddings for card-like blocks */
+.glass-card,
+.pure-glass-card{
+  padding: var(--card-pad) !important;
+  margin-bottom: 1.0rem !important;
+}
+.t6-card,
+.t6-rowcard,
+.t6-box,
+.t6-s7-card{
+  padding: 14px !important;
+  margin-bottom: 12px !important;
+}
+
 .glass-card:hover,
-.pure-glass-card:hover {
+.pure-glass-card:hover,
+.t6-card:hover,
+.t6-rowcard:hover,
+.t6-box:hover,
+.t6-s7-card:hover{
   box-shadow: var(--shadow-heavy), var(--shadow-glow) !important;
-  transform: translateY(-3px) !important;
+  transform: translateY(-2px) !important;
   border-color: var(--border-strong) !important;
 }
 
-.glass-card-mini {
+/* Mini cards */
+.glass-card-mini{
   background: var(--glass-tertiary) !important;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-sm) !important;
   box-shadow: var(--shadow-light) !important;
   backdrop-filter: blur(var(--blur-light)) saturate(1.2) !important;
   -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.2) !important;
-  padding: 1.1rem !important;
-  margin-bottom: 0.9rem !important;
+  padding: 1.05rem !important;
+  margin-bottom: 0.85rem !important;
 }
 
-/* ============================================================
-   ✅ Inputs / Select / Textarea (FULL coverage)
-   ============================================================ */
+/* ------------------------------
+   6) Expander (make it look like a card)
+--------------------------------*/
+div[data-testid="stExpander"] > details{
+  background: var(--glass-secondary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-light) !important;
+  overflow: hidden !important;
+}
+div[data-testid="stExpander"] > details > summary{
+  padding: 0.85rem 1rem !important;
+  color: var(--text-primary) !important;
+}
+div[data-testid="stExpander"] > details[open]{
+  box-shadow: var(--shadow-medium) !important;
+}
+
+/* ------------------------------
+   7) ✅ Inputs / Select / Textarea / Datepicker (full)
+--------------------------------*/
 div[data-baseweb="input"],
 div[data-baseweb="textarea"],
 div[data-baseweb="select"],
-div[data-baseweb="datepicker"] {
+div[data-baseweb="datepicker"]{
   border-radius: var(--field-radius) !important;
   overflow: hidden !important;
   background: var(--field-bg) !important;
@@ -301,7 +372,7 @@ div[data-baseweb="datepicker"] {
 div[data-baseweb="input"] > div,
 div[data-baseweb="textarea"] > div,
 div[data-baseweb="select"] > div,
-div[data-baseweb="datepicker"] > div {
+div[data-baseweb="datepicker"] > div{
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
@@ -311,46 +382,51 @@ div[data-baseweb="datepicker"] > div {
 div[data-baseweb="input"]:focus-within,
 div[data-baseweb="textarea"]:focus-within,
 div[data-baseweb="select"]:focus-within,
-div[data-baseweb="datepicker"]:focus-within {
+div[data-baseweb="datepicker"]:focus-within{
   border-color: var(--field-border-focus) !important;
   box-shadow: var(--field-shadow-focus) !important;
   background: var(--field-bg-focus) !important;
 }
 
-/* Text inside inputs */
+/* Inner text */
 div[data-baseweb="input"] input,
-div[data-baseweb="textarea"] textarea {
+div[data-baseweb="textarea"] textarea{
   color: var(--text-primary) !important;
   background: transparent !important;
   border: none !important;
   outline: none !important;
 }
 
-/* Placeholder */
+/* Placeholders */
 div[data-baseweb="input"] input::placeholder,
-div[data-baseweb="textarea"] textarea::placeholder {
+div[data-baseweb="textarea"] textarea::placeholder{
   color: var(--text-tertiary) !important;
   opacity: 0.85 !important;
 }
 
-/* Password eye / enhancers */
+/* Enhancers (eye icon, etc.) */
 div[data-baseweb="input"] [data-baseweb="end-enhancer"],
-div[data-baseweb="input"] [data-baseweb="start-enhancer"] {
+div[data-baseweb="input"] [data-baseweb="start-enhancer"]{
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
 }
 
 /* Labels */
-label, .stTextInput label, .stSelectbox label, .stTextArea label {
+label,
+.stTextInput label,
+.stSelectbox label,
+.stTextArea label,
+.stNumberInput label,
+.stDateInput label{
   color: var(--text-secondary) !important;
-  font-weight: 650 !important;
+  font-weight: 680 !important;
   margin-bottom: 0.35rem !important;
 }
 
-/* ============================================================
-   ✅ Number input spinner (+ / -) — FIXED: ONE unified box
-   ============================================================ */
+/* ------------------------------
+   8) ✅ Number input spinner (+/-) unified box
+--------------------------------*/
 div[data-baseweb="spinner"]{
   border-radius: var(--field-radius) !important;
   overflow: hidden !important;
@@ -362,19 +438,16 @@ div[data-baseweb="spinner"]{
   transition: all var(--transition-fast) !important;
 }
 
-/* ✅ force internal layout to be a single row */
 div[data-baseweb="spinner"] > div{
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
-
   display: flex !important;
   align-items: center !important;
-  gap: 0 !important;               /* ✅ no separation */
-  padding: 6px !important;         /* ✅ inner padding instead of button margin */
+  gap: 0 !important;
+  padding: 6px !important;
 }
 
-/* ✅ input grows and stays centered */
 div[data-baseweb="spinner"] input{
   flex: 1 1 auto !important;
   min-width: 0 !important;
@@ -387,27 +460,19 @@ div[data-baseweb="spinner"] input{
   text-align: left !important;
 }
 
-/* ✅ buttons are part of the same box (NO margin) */
 div[data-baseweb="spinner"] button{
   flex: 0 0 auto !important;
-
   background: var(--spin-btn-bg) !important;
   border: 1px solid var(--spin-btn-border) !important;
   color: var(--text-primary) !important;
-
   border-radius: 12px !important;
-  margin: 0 !important;            /* ✅ CRITICAL: removed */
+  margin: 0 !important;
   min-width: 44px !important;
   min-height: 38px !important;
-
   transition: all var(--transition-fast) !important;
 }
 
-/* ✅ keep spacing by padding on wrapper (not margin) */
-div[data-baseweb="spinner"] button + button{
-  margin-left: 6px !important;     /* ✅ small gap only between - and + if needed */
-}
-
+div[data-baseweb="spinner"] button + button{ margin-left: 6px !important; }
 div[data-baseweb="spinner"] button:hover{
   background: var(--spin-btn-bg-hover) !important;
   transform: translateY(-1px) !important;
@@ -417,11 +482,8 @@ div[data-baseweb="spinner"] button:active{
   background: var(--spin-btn-bg) !important;
 }
 
-/* remove separators if present */
 div[data-baseweb="spinner"] [role="separator"],
-div[data-baseweb="spinner"] hr{
-  display: none !important;
-}
+div[data-baseweb="spinner"] hr{ display:none !important; }
 
 div[data-baseweb="spinner"]:focus-within{
   border-color: var(--field-border-focus) !important;
@@ -429,7 +491,7 @@ div[data-baseweb="spinner"]:focus-within{
   background: var(--field-bg-focus) !important;
 }
 
-/* Sidebar fields spacing */
+/* Sidebar spacing for fields */
 section[data-testid="stSidebar"] div[data-baseweb="input"],
 section[data-testid="stSidebar"] div[data-baseweb="textarea"],
 section[data-testid="stSidebar"] div[data-baseweb="select"],
@@ -437,10 +499,10 @@ section[data-testid="stSidebar"] div[data-baseweb="spinner"]{
   margin: 0.30rem 0 !important;
 }
 
-/* ============================================================
-   Dropdown menus
-   ============================================================ */
-ul[role="listbox"] {
+/* ------------------------------
+   9) Dropdown menus / multiselect tags
+--------------------------------*/
+ul[role="listbox"]{
   background: var(--glass-secondary) !important;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-sm) !important;
@@ -450,56 +512,68 @@ ul[role="listbox"] {
   overflow: hidden !important;
   margin-top: 0.5rem !important;
 }
-ul[role="listbox"] li {
+ul[role="listbox"] li{
   color: var(--text-primary) !important;
   padding: 0.70rem 1rem !important;
   transition: background-color var(--transition-fast) !important;
 }
-ul[role="listbox"] li:hover {
-  background: rgba(127, 127, 127, 0.15) !important;
-}
-ul[role="listbox"] li[aria-selected="true"] {
-  background: rgba(127, 127, 127, 0.25) !important;
-}
+ul[role="listbox"] li:hover{ background: rgba(127,127,127,0.15) !important; }
+ul[role="listbox"] li[aria-selected="true"]{ background: rgba(127,127,127,0.25) !important; }
 
-/* Multiselect tags */
-div[data-baseweb="tag"] {
-  background: rgba(127, 127, 127, 0.20) !important;
+div[data-baseweb="tag"]{
+  background: rgba(127,127,127,0.20) !important;
   border: 1px solid var(--border) !important;
   border-radius: 999px !important;
   padding: 0.20rem 0.70rem !important;
   margin: 0.25rem !important;
 }
-div[data-baseweb="tag"] span { color: var(--text-primary) !important; }
+div[data-baseweb="tag"] span{ color: var(--text-primary) !important; }
 
-/* ============================================================
-   Buttons
-   ============================================================ */
-.stButton > button {
+/* ------------------------------
+   10) ✅ Checkboxes / Radios / Toggles (BaseWeb)
+--------------------------------*/
+div[data-baseweb="checkbox"] label,
+div[data-baseweb="radio"] label{
+  color: var(--text-primary) !important;
+}
+div[data-baseweb="checkbox"] svg,
+div[data-baseweb="radio"] svg{
+  filter: drop-shadow(0 6px 18px rgba(0,0,0,0.18));
+}
+
+/* Toggle background consistency */
+div[data-baseweb="switch"]{
+  border-radius: 999px !important;
+}
+
+/* ------------------------------
+   11) Buttons
+--------------------------------*/
+.stButton > button{
   border-radius: var(--radius-sm) !important;
   border: none !important;
   background: var(--button-primary) !important;
   color: white !important;
-  font-weight: 700 !important;
+  font-weight: 750 !important;
   padding: 0.72rem 1.6rem !important;
   transition: all var(--transition-fast) !important;
   box-shadow: var(--shadow-light) !important;
   white-space: nowrap !important;
 }
-.stButton > button:hover {
+.stButton > button:hover{
   background: var(--button-hover) !important;
   transform: translateY(-2px) !important;
   box-shadow: var(--shadow-medium) !important;
 }
-.stButton > button:active { transform: translateY(0) !important; }
-.stButton > button:focus {
+.stButton > button:active{ transform: translateY(0) !important; }
+.stButton > button:focus{
   outline: none !important;
-  box-shadow: 0 0 0 3px rgba(88, 153, 255, 0.38) !important;
+  box-shadow: 0 0 0 3px rgba(88,153,255,0.38) !important;
 }
 
-/* Secondary buttons */
+/* Secondary */
 .stButton > button[kind="secondary"],
-.stButton > button[data-testid="baseButton-secondary"] {
+.stButton > button[data-testid="baseButton-secondary"]{
   background: var(--glass-tertiary) !important;
   color: var(--text-primary) !important;
   border: 1px solid var(--border) !important;
@@ -512,89 +586,107 @@ section[data-testid="stSidebar"] .stButton > button{
   padding: 0.45rem 0.90rem !important;
 }
 
-/* ============================================================
-   Tables (basic)
-   ============================================================ */
-.stTable {
+/* ------------------------------
+   12) ✅ File Uploader (dropzone)
+--------------------------------*/
+div[data-testid="stFileUploader"] section{
+  background: var(--glass-tertiary) !important;
+  border: 1px dashed var(--border-strong) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-light) !important;
+  backdrop-filter: blur(var(--blur-light)) saturate(1.15) !important;
+}
+div[data-testid="stFileUploader"] section:hover{
+  border-color: var(--field-border-focus) !important;
+  box-shadow: var(--shadow-medium) !important;
+}
+
+/* ------------------------------
+   13) ✅ Tables / DataFrame
+--------------------------------*/
+.stTable,
+div[data-testid="stDataFrame"]{
   background: var(--glass-tertiary) !important;
   border-radius: var(--radius-sm) !important;
   border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-light) !important;
   backdrop-filter: blur(var(--blur-light)) saturate(1.2) !important;
   -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.2) !important;
+  overflow: hidden !important;
 }
 
-/* ============================================================
-   Tabs
-   ============================================================ */
-.stTabs [data-baseweb="tab-list"] {
+/* Make dataframe header/rows readable */
+div[data-testid="stDataFrame"] *{
+  color: var(--text-primary) !important;
+}
+
+/* ------------------------------
+   14) Tabs
+--------------------------------*/
+.stTabs [data-baseweb="tab-list"]{
   background: var(--glass-tertiary) !important;
   border-radius: var(--radius-sm) !important;
   padding: 0.45rem !important;
   gap: 0.45rem !important;
 }
-.stTabs [data-baseweb="tab"] {
+.stTabs [data-baseweb="tab"]{
   background: transparent !important;
   color: var(--text-secondary) !important;
   border-radius: var(--radius-xs) !important;
   padding: 0.70rem 1.35rem !important;
   transition: all var(--transition-fast) !important;
 }
-.stTabs [aria-selected="true"] {
+.stTabs [aria-selected="true"]{
   background: var(--button-primary) !important;
   color: white !important;
   box-shadow: var(--shadow-light) !important;
 }
 
-/* ============================================================
-   Centered Frame (Home/Tool pages)
-   ============================================================ */
+/* ------------------------------
+   15) Page frame helpers (optional)
+--------------------------------*/
 .page-center{
   min-height: calc(100vh - 6rem);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display:flex;
+  align-items:center;
+  justify-content:center;
 }
 .page-frame{
   width: min(1100px, 94vw);
   padding: 28px 28px 22px 28px;
 
   border-radius: 20px;
-  border: 1px solid rgba(255,255,255,0.18);
+  border: 1px solid var(--border-strong);
 
-  background: rgba(255,255,255,0.06);
+  background: var(--glass-secondary);
   backdrop-filter: blur(16px) saturate(1.15);
   -webkit-backdrop-filter: blur(16px) saturate(1.15);
 
   box-shadow:
     0 0 0 1px rgba(255,255,255,0.06),
-    0 18px 45px rgba(0,0,0,0.55),
+    0 18px 45px rgba(0,0,0,0.35),
     0 0 32px rgba(90,140,255,0.15);
 }
 
-/* ============================================================
-   Responsive
-   ============================================================ */
-@media (max-width: 768px) {
-  :root {
+/* ------------------------------
+   16) Responsive
+--------------------------------*/
+@media (max-width: 768px){
+  :root{
     --radius-lg: 20px;
     --radius-md: 16px;
     --radius-sm: 12px;
     --blur-heavy: 20px;
     --blur-medium: 16px;
     --blur-light: 10px;
+    --card-pad: 1.05rem;
   }
-
-  .block-container {
-    padding: 0.9rem !important;
-  }
-
-  section[data-testid="stSidebar"] {
-    margin: 0.5rem !important;
-  }
+  .block-container{ padding: 0.9rem !important; }
+  section[data-testid="stSidebar"]{ margin: 0.5rem !important; }
 }
 
-@media (min-width: 1200px) {
-  .block-container {
+@media (min-width: 1200px){
+  .block-container{
     max-width: 1400px !important;
     margin: 0 auto !important;
   }
