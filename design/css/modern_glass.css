@@ -1,10 +1,10 @@
 /* ============================================================
-   Modern Glassmorphism Theme for Streamlit (Unified + Robust)
-   Goals:
-   - Consistent cards across ALL pages/steps
-   - Column stretch + equal-height cards
-   - Full widget coverage (inputs, toggles, uploaders, tables)
-   - Dark/Light stable tokens
+   WASH_Pro — Streamlit Modern Glassmorphism (Final Unified)
+   Focus:
+   - Full edge/corner coverage (no square corners anywhere)
+   - Full widget coverage (inputs/spinner/labels/errors/hints/tooltips/menus)
+   - Stable light/dark via tokens
+   - Anti-bleed (no dark bands/shadow overlaps)
    ============================================================ */
 
 /* ------------------------------
@@ -85,13 +85,18 @@
   --field-shadow: 0 10px 28px rgba(0,0,0,0.22);
   --field-shadow-focus: 0 0 0 3px rgba(88,153,255,0.18), 0 14px 34px rgba(0,0,0,0.25);
 
-  /* Spinner buttons */
-  --spin-btn-bg: rgba(255,255,255,0.07);
-  --spin-btn-bg-hover: rgba(255,255,255,0.12);
-  --spin-btn-border: rgba(255,255,255,0.10);
+  /* Spinner hover */
+  --spin-btn-bg: rgba(255,255,255,0.00);
+  --spin-btn-bg-hover: rgba(255,255,255,0.10);
 
   /* Card padding unified */
   --card-pad: 1.35rem;
+
+  /* Feedback colors */
+  --c-info: rgba(33,150,243,0.95);
+  --c-success: rgba(76,175,80,0.95);
+  --c-warning: rgba(255,152,0,0.95);
+  --c-error: rgba(244,67,54,0.95);
 }
 
 /* ------------------------------
@@ -99,19 +104,15 @@
 --------------------------------*/
 html[data-theme="light"], body.light{
   --bg: var(--bg-light);
-
   --glass-primary: var(--glass-light-primary);
   --glass-secondary: var(--glass-light-secondary);
   --glass-tertiary: var(--glass-light-tertiary);
-
   --border: var(--border-light);
   --border-strong: var(--border-light-strong);
-
   --text-primary: var(--text-light-primary);
   --text-secondary: var(--text-light-secondary);
   --text-tertiary: var(--text-light-tertiary);
   --text-accent: var(--text-light-accent);
-
   --button-primary: var(--button-light-primary);
   --button-hover: var(--button-light-hover);
 
@@ -122,26 +123,21 @@ html[data-theme="light"], body.light{
   --field-shadow: 0 10px 24px rgba(0,0,0,0.10);
   --field-shadow-focus: 0 0 0 3px rgba(88,153,255,0.20), 0 14px 30px rgba(0,0,0,0.12);
 
-  --spin-btn-bg: rgba(0,0,0,0.05);
-  --spin-btn-bg-hover: rgba(0,0,0,0.08);
-  --spin-btn-border: rgba(0,0,0,0.10);
+  --spin-btn-bg: rgba(0,0,0,0.00);
+  --spin-btn-bg-hover: rgba(0,0,0,0.06);
 }
 
 html[data-theme="dark"], body.dark{
   --bg: var(--bg-dark);
-
   --glass-primary: var(--glass-dark-primary);
   --glass-secondary: var(--glass-dark-secondary);
   --glass-tertiary: var(--glass-dark-tertiary);
-
   --border: var(--border-dark);
   --border-strong: var(--border-dark-strong);
-
   --text-primary: var(--text-dark-primary);
   --text-secondary: var(--text-dark-secondary);
   --text-tertiary: var(--text-dark-tertiary);
   --text-accent: var(--text-dark-accent);
-
   --button-primary: var(--button-dark-primary);
   --button-hover: var(--button-dark-hover);
 }
@@ -173,18 +169,17 @@ html:not([data-theme]){
   transition: background var(--transition-medium) !important;
 }
 
+/* Prevent random overlays / bleed */
+.stApp, .main, .block-container{
+  isolation: isolate !important;
+}
+
 header[data-testid="stHeader"]{
   background: transparent !important;
   border-bottom: none !important;
 }
-footer{
-  visibility:hidden !important;
-  height:0 !important;
-  padding:0 !important;
-  margin:0 !important;
-}
+footer{ visibility:hidden !important; height:0 !important; padding:0 !important; margin:0 !important; }
 
-/* container spacing */
 .block-container{
   padding-top: 0.65rem !important;
   padding-left: 1.25rem !important;
@@ -193,21 +188,18 @@ footer{
   max-width: 100% !important;
 }
 
-/* ✅ Very important: consistent vertical rhythm across pages */
-[data-testid="stVerticalBlock"]{
-  gap: 0.70rem !important;
-}
+/* Rhythm */
+[data-testid="stVerticalBlock"]{ gap: 0.70rem !important; }
 
-/* ✅ Columns: stretch children so cards align vertically */
+/* Columns stretch */
 div[data-testid="stHorizontalBlock"]{ align-items: stretch !important; }
 div[data-testid="column"]{
-  display: flex !important;
-  flex-direction: column !important;
-  align-self: stretch !important;
+  display:flex !important;
+  flex-direction:column !important;
+  align-self:stretch !important;
+  min-width: 0 !important;
 }
-div[data-testid="column"] > div{
-  width: 100% !important;
-}
+div[data-testid="column"] > div{ width:100% !important; min-width: 0 !important; }
 
 /* Typography */
 h1,h2,h3,h4,h5,h6{
@@ -217,12 +209,10 @@ h1,h2,h3,h4,h5,h6{
 }
 p{ color: var(--text-secondary) !important; }
 small, .stCaption, .stMarkdown small{ color: var(--text-tertiary) !important; }
-
-/* Links */
 a, a:visited{ color: var(--text-accent) !important; }
 
 /* ------------------------------
-   3) Remove Streamlit grey layers (but keep OUR cards)
+   3) Remove Streamlit grey layers (safe)
 --------------------------------*/
 div[data-testid="stVerticalBlockBorderWrapper"],
 div[data-testid="stVerticalBlock"],
@@ -231,8 +221,6 @@ div[data-testid="stHorizontalBlock"]{
   border: none !important;
   box-shadow: none !important;
 }
-
-/* Expander outer wrappers */
 div[data-testid="stExpander"]{
   background: transparent !important;
   border: none !important;
@@ -246,6 +234,7 @@ section[data-testid="stSidebar"]{
   background: var(--glass-primary) !important;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-lg) !important;
+  overflow: hidden !important;
   box-shadow: var(--shadow-heavy) !important;
   backdrop-filter: blur(var(--blur-heavy)) saturate(1.4) !important;
   -webkit-backdrop-filter: blur(var(--blur-heavy)) saturate(1.4) !important;
@@ -268,16 +257,10 @@ section[data-testid="stSidebar"] h3{
   margin: 0.35rem 0 0.55rem 0 !important;
   font-weight: 820 !important;
 }
-section[data-testid="stSidebar"] label{
-  font-size: 12px !important;
-  opacity: 0.86 !important;
-}
+section[data-testid="stSidebar"] label{ font-size: 12px !important; opacity: 0.86 !important; }
 
 /* ------------------------------
-   5) ✅ Unified Cards Everywhere
-   - glass-card / pure-glass-card
-   - t6-card (Step3/4)
-   - t6-rowcard, t6-box, t6-s7-card, t6-card (Step5/7/8)
+   5) Cards — unified + edge-safe
 --------------------------------*/
 .glass-card,
 .pure-glass-card,
@@ -288,6 +271,9 @@ section[data-testid="stSidebar"] label{
 .t6-s8-wrap .t6-card,
 .t6-s10-sticky,
 .t6-s9-sticky{
+  position: relative !important;
+  overflow: hidden !important;                /* ✅ clip corners */
+  isolation: isolate !important;              /* ✅ prevent bleed */
   background: var(--glass-secondary) !important;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-md) !important;
@@ -297,12 +283,12 @@ section[data-testid="stSidebar"] label{
   transition: all var(--transition-medium) !important;
 }
 
-/* Default paddings for card-like blocks */
 .glass-card,
 .pure-glass-card{
   padding: var(--card-pad) !important;
   margin-bottom: 1.0rem !important;
 }
+
 .t6-card,
 .t6-rowcard,
 .t6-box,
@@ -322,8 +308,10 @@ section[data-testid="stSidebar"] label{
   border-color: var(--border-strong) !important;
 }
 
-/* Mini cards */
 .glass-card-mini{
+  position: relative !important;
+  overflow: hidden !important;
+  isolation: isolate !important;
   background: var(--glass-tertiary) !important;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-sm) !important;
@@ -334,39 +322,50 @@ section[data-testid="stSidebar"] label{
   margin-bottom: 0.85rem !important;
 }
 
+/* Prevent nested wrappers from adding backgrounds inside cards */
+.pure-glass-card .element-container,
+.pure-glass-card .stMarkdown,
+.pure-glass-card .stDataFrame,
+.pure-glass-card .stMetric{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
 /* ------------------------------
-   6) Expander (make it look like a card)
+   6) Expander (card-like + edge-safe)
 --------------------------------*/
 div[data-testid="stExpander"] > details{
   background: var(--glass-secondary) !important;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-md) !important;
+  overflow: hidden !important;                /* ✅ clip edges */
   box-shadow: var(--shadow-light) !important;
-  overflow: hidden !important;
 }
 div[data-testid="stExpander"] > details > summary{
   padding: 0.85rem 1rem !important;
   color: var(--text-primary) !important;
 }
-div[data-testid="stExpander"] > details[open]{
-  box-shadow: var(--shadow-medium) !important;
-}
+div[data-testid="stExpander"] > details[open]{ box-shadow: var(--shadow-medium) !important; }
 
 /* ------------------------------
-   7) ✅ Inputs / Select / Textarea / Datepicker (full)
+   7) Inputs / Select / Textarea / Datepicker (full + edge-safe)
 --------------------------------*/
 div[data-baseweb="input"],
 div[data-baseweb="textarea"],
 div[data-baseweb="select"],
 div[data-baseweb="datepicker"]{
   border-radius: var(--field-radius) !important;
-  overflow: hidden !important;
+  overflow: hidden !important;                 /* ✅ clip corners */
   background: var(--field-bg) !important;
   border: 1px solid var(--field-border) !important;
   box-shadow: var(--field-shadow) !important;
   backdrop-filter: blur(var(--blur-light)) saturate(1.15) !important;
   -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.15) !important;
   transition: all var(--transition-fast) !important;
+
+  position: relative !important;
+  z-index: 1 !important;                      /* ✅ anti-bleed */
 }
 
 div[data-baseweb="input"] > div,
@@ -376,7 +375,8 @@ div[data-baseweb="datepicker"] > div{
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
-  border-radius: var(--field-radius) !important;
+  border-radius: inherit !important;
+  overflow: hidden !important;
 }
 
 div[data-baseweb="input"]:focus-within,
@@ -388,16 +388,15 @@ div[data-baseweb="datepicker"]:focus-within{
   background: var(--field-bg-focus) !important;
 }
 
-/* Inner text */
 div[data-baseweb="input"] input,
 div[data-baseweb="textarea"] textarea{
   color: var(--text-primary) !important;
   background: transparent !important;
   border: none !important;
   outline: none !important;
+  box-shadow: none !important;
 }
 
-/* Placeholders */
 div[data-baseweb="input"] input::placeholder,
 div[data-baseweb="textarea"] textarea::placeholder{
   color: var(--text-tertiary) !important;
@@ -412,78 +411,138 @@ div[data-baseweb="input"] [data-baseweb="start-enhancer"]{
   box-shadow: none !important;
 }
 
-/* Labels */
+/* Labels + helper/description text */
 label,
 .stTextInput label,
 .stSelectbox label,
 .stTextArea label,
 .stNumberInput label,
-.stDateInput label{
+.stDateInput label,
+.stMultiSelect label{
   color: var(--text-secondary) !important;
   font-weight: 680 !important;
   margin-bottom: 0.35rem !important;
 }
 
+/* Help icon button (the small ?) – keep it clean */
+button[data-testid="stHelpIcon"],
+button[aria-label="Help"]{
+  border-radius: 999px !important;
+  background: transparent !important;
+  border: 1px solid transparent !important;
+}
+button[data-testid="stHelpIcon"]:hover,
+button[aria-label="Help"]:hover{
+  background: rgba(127,127,127,0.12) !important;
+  border-color: var(--border) !important;
+}
+
 /* ------------------------------
-   8) ✅ Number input spinner (+/-) unified box
+   8) ✅ Number input spinner (+/-) — TRUE single unified box
+   Fixes split-box look and wrong corners like your screenshot
 --------------------------------*/
 div[data-baseweb="spinner"]{
   border-radius: var(--field-radius) !important;
-  overflow: hidden !important;
+  overflow: hidden !important;                 /* ✅ clip edges */
   background: var(--field-bg) !important;
   border: 1px solid var(--field-border) !important;
   box-shadow: var(--field-shadow) !important;
   backdrop-filter: blur(var(--blur-light)) saturate(1.15) !important;
   -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.15) !important;
   transition: all var(--transition-fast) !important;
+
+  display: flex !important;                    /* ✅ single row control */
+  align-items: stretch !important;
+
+  position: relative !important;
+  z-index: 1 !important;                       /* ✅ anti-bleed */
 }
 
 div[data-baseweb="spinner"] > div{
+  flex: 1 1 auto !important;
+  display: flex !important;
+  align-items: stretch !important;
+  gap: 0 !important;
+
   background: transparent !important;
   border: none !important;
   box-shadow: none !important;
+  padding: 0 !important;
+  margin: 0 !important;
+  min-width: 0 !important;
+}
+
+/* Some builds have an extra wrapper – keep it safe */
+div[data-baseweb="spinner"] > div > div{
   display: flex !important;
-  align-items: center !important;
+  align-items: stretch !important;
   gap: 0 !important;
-  padding: 6px !important;
+  flex: 1 1 auto !important;
+  min-width: 0 !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
 }
 
 div[data-baseweb="spinner"] input{
   flex: 1 1 auto !important;
   min-width: 0 !important;
+
   background: transparent !important;
   border: none !important;
   outline: none !important;
   box-shadow: none !important;
+
   color: var(--text-primary) !important;
   font-weight: 700 !important;
-  text-align: left !important;
+
+  padding: 10px 12px !important;
+  line-height: 1.2 !important;
 }
 
+/* Buttons inside same box (no detached panel) */
 div[data-baseweb="spinner"] button{
   flex: 0 0 auto !important;
-  background: var(--spin-btn-bg) !important;
-  border: 1px solid var(--spin-btn-border) !important;
+
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+
   color: var(--text-primary) !important;
-  border-radius: 12px !important;
-  margin: 0 !important;
+  font-weight: 900 !important;
+
   min-width: 44px !important;
-  min-height: 38px !important;
+  min-height: 42px !important;
+
+  padding: 0 !important;
+  margin: 0 !important;
+
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+
   transition: all var(--transition-fast) !important;
 }
 
-div[data-baseweb="spinner"] button + button{ margin-left: 6px !important; }
+/* Divider lines between areas */
+div[data-baseweb="spinner"] button:first-of-type{
+  border-left: 1px solid var(--field-border) !important;
+}
+div[data-baseweb="spinner"] button + button{
+  border-left: 1px solid var(--field-border) !important;
+}
+
 div[data-baseweb="spinner"] button:hover{
   background: var(--spin-btn-bg-hover) !important;
-  transform: translateY(-1px) !important;
 }
 div[data-baseweb="spinner"] button:active{
-  transform: translateY(0) !important;
-  background: var(--spin-btn-bg) !important;
+  background: var(--spin-btn-bg-hover) !important;
 }
 
 div[data-baseweb="spinner"] [role="separator"],
-div[data-baseweb="spinner"] hr{ display:none !important; }
+div[data-baseweb="spinner"] hr{
+  display: none !important;
+}
 
 div[data-baseweb="spinner"]:focus-within{
   border-color: var(--field-border-focus) !important;
@@ -500,18 +559,20 @@ section[data-testid="stSidebar"] div[data-baseweb="spinner"]{
 }
 
 /* ------------------------------
-   9) Dropdown menus / multiselect tags
+   9) Menus / listbox / multiselect tags / popovers (edge-safe)
 --------------------------------*/
-ul[role="listbox"]{
+ul[role="listbox"],
+div[data-baseweb="menu"]{
   background: var(--glass-secondary) !important;
   border: 1px solid var(--border) !important;
   border-radius: var(--radius-sm) !important;
+  overflow: hidden !important;
   box-shadow: var(--shadow-heavy) !important;
   backdrop-filter: blur(var(--blur-medium)) saturate(1.3) !important;
   -webkit-backdrop-filter: blur(var(--blur-medium)) saturate(1.3) !important;
-  overflow: hidden !important;
   margin-top: 0.5rem !important;
 }
+
 ul[role="listbox"] li{
   color: var(--text-primary) !important;
   padding: 0.70rem 1rem !important;
@@ -530,30 +591,40 @@ div[data-baseweb="tag"]{
 div[data-baseweb="tag"] span{ color: var(--text-primary) !important; }
 
 /* ------------------------------
-   10) ✅ Checkboxes / Radios / Toggles (BaseWeb)
+   10) Tooltip / Hint / Popover (full)
 --------------------------------*/
-div[data-baseweb="checkbox"] label,
-div[data-baseweb="radio"] label{
+/* BaseWeb tooltip/popover surfaces */
+div[data-baseweb="tooltip"],
+div[data-baseweb="popover"],
+div[role="tooltip"]{
+  background: var(--glass-secondary) !important;
   color: var(--text-primary) !important;
-}
-div[data-baseweb="checkbox"] svg,
-div[data-baseweb="radio"] svg{
-  filter: drop-shadow(0 6px 18px rgba(0,0,0,0.18));
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  box-shadow: var(--shadow-heavy) !important;
+  overflow: hidden !important;
+  backdrop-filter: blur(var(--blur-medium)) saturate(1.3) !important;
+  -webkit-backdrop-filter: blur(var(--blur-medium)) saturate(1.3) !important;
 }
 
-/* Toggle background consistency */
-div[data-baseweb="switch"]{
-  border-radius: 999px !important;
+/* Streamlit tooltip content wrapper (varies by version) */
+div[data-testid="stTooltipContent"]{
+  background: var(--glass-secondary) !important;
+  color: var(--text-primary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-sm) !important;
+  box-shadow: var(--shadow-heavy) !important;
+  overflow: hidden !important;
 }
 
 /* ------------------------------
-   11) Buttons
+   11) Buttons (global)
 --------------------------------*/
 .stButton > button{
   border-radius: var(--radius-sm) !important;
   border: none !important;
   background: var(--button-primary) !important;
-  color: white !important;
+  color: #fff !important;
   font-weight: 750 !important;
   padding: 0.72rem 1.6rem !important;
   transition: all var(--transition-fast) !important;
@@ -587,12 +658,13 @@ section[data-testid="stSidebar"] .stButton > button{
 }
 
 /* ------------------------------
-   12) ✅ File Uploader (dropzone)
+   12) File uploader
 --------------------------------*/
 div[data-testid="stFileUploader"] section{
   background: var(--glass-tertiary) !important;
   border: 1px dashed var(--border-strong) !important;
   border-radius: var(--radius-md) !important;
+  overflow: hidden !important;
   box-shadow: var(--shadow-light) !important;
   backdrop-filter: blur(var(--blur-light)) saturate(1.15) !important;
 }
@@ -602,23 +674,19 @@ div[data-testid="stFileUploader"] section:hover{
 }
 
 /* ------------------------------
-   13) ✅ Tables / DataFrame
+   13) Tables / DataFrame
 --------------------------------*/
 .stTable,
 div[data-testid="stDataFrame"]{
   background: var(--glass-tertiary) !important;
   border-radius: var(--radius-sm) !important;
   border: 1px solid var(--border) !important;
+  overflow: hidden !important;
   box-shadow: var(--shadow-light) !important;
   backdrop-filter: blur(var(--blur-light)) saturate(1.2) !important;
   -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.2) !important;
-  overflow: hidden !important;
 }
-
-/* Make dataframe header/rows readable */
-div[data-testid="stDataFrame"] *{
-  color: var(--text-primary) !important;
-}
+div[data-testid="stDataFrame"] *{ color: var(--text-primary) !important; }
 
 /* ------------------------------
    14) Tabs
@@ -638,12 +706,60 @@ div[data-testid="stDataFrame"] *{
 }
 .stTabs [aria-selected="true"]{
   background: var(--button-primary) !important;
-  color: white !important;
+  color: #fff !important;
   box-shadow: var(--shadow-light) !important;
 }
 
 /* ------------------------------
-   15) Page frame helpers (optional)
+   15) Alerts / Errors / Exceptions / Status
+   (covers info/warning/error/success + rounded edges)
+--------------------------------*/
+div[data-testid="stAlert"]{
+  position: relative !important;
+  overflow: hidden !important;
+  border-radius: var(--radius-md) !important;
+  background: var(--glass-secondary) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: var(--shadow-light) !important;
+  backdrop-filter: blur(var(--blur-light)) saturate(1.2) !important;
+  -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.2) !important;
+}
+div[data-testid="stAlert"] > div{
+  border-radius: inherit !important;
+  overflow: hidden !important;
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Python exception blocks sometimes appear as stException */
+div[data-testid="stException"]{
+  border-radius: var(--radius-md) !important;
+  overflow: hidden !important;
+  border: 1px solid rgba(244,67,54,0.35) !important;
+  background: rgba(244,67,54,0.10) !important;
+  box-shadow: var(--shadow-light) !important;
+}
+
+/* Status element (if used) */
+div[data-testid="stStatusWidget"]{
+  border-radius: var(--radius-md) !important;
+  overflow: hidden !important;
+  border: 1px solid var(--border) !important;
+  background: var(--glass-secondary) !important;
+  box-shadow: var(--shadow-light) !important;
+}
+
+/* ------------------------------
+   16) Wizard/nav rows should be above shadows (anti dark-band)
+--------------------------------*/
+.wiz-nav, .wizard-nav-container{
+  position: relative !important;
+  z-index: 5 !important;
+}
+
+/* ------------------------------
+   17) Page frame helpers
 --------------------------------*/
 .page-center{
   min-height: calc(100vh - 6rem);
@@ -654,14 +770,10 @@ div[data-testid="stDataFrame"] *{
 .page-frame{
   width: min(1100px, 94vw);
   padding: 28px 28px 22px 28px;
-
   border-radius: 20px;
   border: 1px solid var(--border-strong);
-
   background: var(--glass-secondary);
-  backdrop-filter: blur(16px) saturate(1.15);
-  -webkit-backdrop-filter: blur(16px) saturate(1.15);
-
+  overflow: hidden !important;
   box-shadow:
     0 0 0 1px rgba(255,255,255,0.06),
     0 18px 45px rgba(0,0,0,0.35),
@@ -669,7 +781,80 @@ div[data-testid="stDataFrame"] *{
 }
 
 /* ------------------------------
-   16) Responsive
+   18) Cards.py structural classes (gc-*)
+--------------------------------*/
+.gc-card{
+  position: relative !important;
+  overflow: hidden !important;
+  isolation: isolate !important;
+}
+.gc-inner{ padding: 0 !important; }
+
+.gc-header{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap: 12px;
+  margin-bottom: 0.10rem;
+}
+.gc-header-left{ min-width: 0; }
+.gc-title{
+  margin: 0 0 0.40rem 0 !important;
+  color: var(--text-primary) !important;
+  font-weight: 820 !important;
+  font-size: 1.22rem !important;
+  line-height: 1.25 !important;
+}
+.gc-subtitle{
+  margin: 0 !important;
+  color: var(--text-secondary) !important;
+  opacity: 0.92 !important;
+  font-size: 0.96rem !important;
+  line-height: 1.45 !important;
+}
+.gc-header-right{ flex: 0 0 auto; padding-top: 0.10rem; }
+.gc-chip{
+  display:inline-flex;
+  align-items:center;
+  padding: 0.40rem 0.90rem;
+  border-radius: 999px;
+  background: var(--glass-tertiary);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 0.90rem;
+  font-weight: 700;
+  box-shadow: var(--shadow-light);
+  backdrop-filter: blur(var(--blur-light)) saturate(1.2);
+  -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.2);
+}
+.gc-divider{
+  height: 1px;
+  width: 100%;
+  margin: 0.85rem 0 1.05rem 0;
+  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
+  opacity: 0.9;
+}
+.gc-body{ margin-top: 0.95rem; }
+
+.pure-glass-card.transparent{ background: var(--glass-tertiary) !important; }
+.pure-glass-card.frosted{
+  backdrop-filter: blur(calc(var(--blur-heavy) + 6px)) saturate(1.55) !important;
+  -webkit-backdrop-filter: blur(calc(var(--blur-heavy) + 6px)) saturate(1.55) !important;
+}
+.pure-glass-card.tight{ padding: 1.10rem !important; }
+.pure-glass-card.soft{ box-shadow: var(--shadow-light) !important; }
+
+.gc-card .element-container,
+.gc-card .stMarkdown,
+.gc-card .stDataFrame,
+.gc-card .stMetric{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* ------------------------------
+   19) Responsive
 --------------------------------*/
 @media (max-width: 768px){
   :root{
@@ -691,102 +876,3 @@ div[data-testid="stDataFrame"] *{
     margin: 0 auto !important;
   }
 }
-/* ============================================================
-   Cards.py structural classes (edge + thin borders coverage)
-   ============================================================ */
-
-/* Outer structural wrapper (keeps rounded clipping) */
-.gc-card{
-  position: relative !important;
-  overflow: hidden !important;     /* ✅ مهم: کلیپ کردن لبه‌ها */
-  isolation: isolate !important;   /* ✅ جلوگیری از bleed */
-}
-
-/* Inner wrapper for padding consistency */
-.gc-inner{
-  padding: 0 !important;
-}
-
-/* Header */
-.gc-header{
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 0.10rem;
-}
-.gc-header-left{
-  min-width: 0;
-}
-.gc-title{
-  margin: 0 0 0.40rem 0 !important;
-  color: var(--text-primary) !important;
-  font-weight: 820 !important;
-  font-size: 1.22rem !important;
-  line-height: 1.25 !important;
-}
-.gc-subtitle{
-  margin: 0 !important;
-  color: var(--text-secondary) !important;
-  opacity: 0.92 !important;
-  font-size: 0.96rem !important;
-  line-height: 1.45 !important;
-}
-.gc-header-right{
-  flex: 0 0 auto;
-  padding-top: 0.10rem;
-}
-.gc-chip{
-  display: inline-flex;
-  align-items: center;
-  padding: 0.40rem 0.90rem;
-  border-radius: 999px;
-  background: var(--glass-tertiary);
-  border: 1px solid var(--border);
-  color: var(--text-primary);
-  font-size: 0.90rem;
-  font-weight: 700;
-  box-shadow: var(--shadow-light);
-  backdrop-filter: blur(var(--blur-light)) saturate(1.2);
-  -webkit-backdrop-filter: blur(var(--blur-light)) saturate(1.2);
-}
-
-/* Divider */
-.gc-divider{
-  height: 1px;
-  width: 100%;
-  margin: 0.85rem 0 1.05rem 0;
-  background: linear-gradient(90deg, transparent, var(--border-strong), transparent);
-  opacity: 0.9;
-}
-
-/* Body spacing */
-.gc-body{
-  margin-top: 0.95rem;
-}
-
-/* Variants: keep them token-based */
-.pure-glass-card.transparent{
-  background: var(--glass-tertiary) !important;
-}
-.pure-glass-card.frosted{
-  backdrop-filter: blur(calc(var(--blur-heavy) + 6px)) saturate(1.55) !important;
-  -webkit-backdrop-filter: blur(calc(var(--blur-heavy) + 6px)) saturate(1.55) !important;
-}
-.pure-glass-card.tight{
-  padding: 1.10rem !important;
-}
-.pure-glass-card.soft{
-  box-shadow: var(--shadow-light) !important;
-}
-
-/* Extra: avoid inner wrappers creating borders/backgrounds */
-.gc-card .element-container,
-.gc-card .stMarkdown,
-.gc-card .stDataFrame,
-.gc-card .stMetric{
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}
-
