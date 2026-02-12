@@ -92,8 +92,69 @@ def _init_state() -> None:
         ss[SS_MONEY_AMT] = {}
 
 
+# -----------------------------------------------------------------------------
+# ✅ NEW: Field defaults from ctx.row (your dataset columns)
+# -----------------------------------------------------------------------------
+# - For "documents on site" and specific 0/1 columns, we read ctx.row.
+# - These values are only used if ctx.defaults doesn't already supply the field.
+FIELD_DEFAULTS_FROM_ROW: Dict[str, Tuple[str, str]] = {
+    # Docs (0/1)
+    "Contract": ("row", "B3_Contract"),
+    "Journal": ("row", "B4_Journal"),
+    "Design drawings": ("row", "B1_Design_drawings"),
+    "Site engineer": ("row", "B6_Site_engineer"),
+
+    # Docs (presence => Yes/No)
+    "BOQ": ("row_presence", "approved_boq"),
+    "Geophysical tests": ("row_presence", "geophysical_survey_report"),
+    "Water quality tests": ("row_presence", "water_quality_test_report"),
+    "Pump test results": ("row_presence", "solar_pump_nameplate_serial"),
+
+    # Risk / Safety / Agreement (0/1)
+    "Environmental risk": ("row", "C2_environmental_risk"),
+    "Work safety considered": ("row", "A13_Is_work_safety_considered"),
+    "Community agreement (Is the community/user group agreed on the well site?)": ("row", "C1_community_agreement"),
+}
+
+
+def _row_value(ctx: Tool6Context, col: str) -> Any:
+    row = getattr(ctx, "row", {}) or {}
+    return row.get(col)
+
+
+def _default_from_row_mapping(field: str, ctx: Tool6Context) -> str:
+    """
+    Returns the default string for the given field from ctx.row based on FIELD_DEFAULTS_FROM_ROW.
+    - mode "row": raw numeric/string 0/1 preserved as string
+    - mode "row_presence": presence => "1", blank => "0"
+    """
+    spec = FIELD_DEFAULTS_FROM_ROW.get(field)
+    if not spec:
+        return ""
+
+    mode, col = spec
+    v = _row_value(ctx, col)
+
+    if mode == "row_presence":
+        # Any non-blank value => Yes
+        return "1" if _s(v) else "0"
+
+    # mode == "row": keep as-is (0/1 etc.)
+    return _s(v)
+
+
 def _get_default(field: str, ctx: Tool6Context) -> str:
-    return _s((ctx.defaults or {}).get(field, ""))
+    # Prefer ctx.defaults if provided
+    d = _s((ctx.defaults or {}).get(field, ""))
+    if d:
+        return d
+
+    # Otherwise, use explicit dataset-column mapping (for the fields you listed)
+    mapped = _default_from_row_mapping(field, ctx)
+    if mapped:
+        return mapped
+
+    return ""
 
 
 def _get_value(field: str, ctx: Tool6Context) -> str:
@@ -127,6 +188,39 @@ def _ensure_widget_default(widget_key: str, default_value: Any) -> None:
     ss = st.session_state
     if widget_key not in ss:
         ss[widget_key] = default_value
+
+
+# -----------------------------------------------------------------------------
+# Normalizers for dataset-coded fields
+# -----------------------------------------------------------------------------
+def _normalize_yes_no(raw: Any, *, allow_empty: bool = True) -> str:
+    r = _s(raw)
+    if r == "1":
+        return "Yes"
+    if r == "0":
+        return "No"
+
+    rr = r.lower()
+    if rr in ("yes", "y", "true"):
+        return "Yes"
+    if rr in ("no", "n", "false"):
+        return "No"
+
+    return "" if allow_empty else "No"
+
+
+def _normalize_sex(raw: Any, *, allow_empty: bool = True) -> str:
+    r = _s(raw)
+    if r == "1":
+        return "Male"
+    if r == "2":
+        return "Female"
+    rr = r.lower()
+    if rr in ("male", "m"):
+        return "Male"
+    if rr in ("female", "f"):
+        return "Female"
+    return "" if allow_empty else "Male"
 
 
 # -----------------------------------------------------------------------------
@@ -248,7 +342,7 @@ def _apply_money_override(field: str, *, amt_key: str, cur_key: str) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Widgets (fast + minimal)
+# Widgets
 # -----------------------------------------------------------------------------
 def w_text(field: str, ctx: Tool6Context, *, placeholder: str = "", help_text: str = "") -> None:
     k = _k(field, "text")
@@ -282,7 +376,59 @@ def w_select(field: str, ctx: Tool6Context, options: List[str], *, allow_empty: 
 
 
 def w_yes_no(field: str, ctx: Tool6Context, *, allow_empty: bool = True) -> None:
-    w_select(field, ctx, YES_NO, allow_empty=allow_empty)
+    """
+    UI shows Yes/No.
+    Default mapping:
+      - dataset 1 => Yes
+      - dataset 0 => No
+      - for "presence" mapped fields, _get_default returns 1/0 already.
+    """
+    raw = _get_value(field, ctx)
+    cur = _normalize_yes_no(raw, allow_empty=allow_empty)
+
+    opts = ([""] + YES_NO) if allow_empty else YES_NO
+    if cur not in opts:
+        cur = opts[0] if opts else ""
+
+    k = _k(field, "yesno")
+    _ensure_widget_default(k, cur)
+
+    def _apply():
+        v = _s(st.session_state.get(k))
+        # store human-readable
+        _set_override_if_changed(field, v)
+
+    st.selectbox(
+        field,
+        options=opts,
+        key=k,
+        on_change=_apply,
+    )
+    _hint(field, ctx)
+
+
+def w_sex(field: str, ctx: Tool6Context, *, allow_empty: bool = True) -> None:
+    raw = _get_value(field, ctx)
+    cur = _normalize_sex(raw, allow_empty=allow_empty)
+
+    opts = ([""] + ["Male", "Female"]) if allow_empty else ["Male", "Female"]
+    if cur not in opts:
+        cur = opts[0] if opts else ""
+
+    k = _k(field, "sex")
+    _ensure_widget_default(k, cur)
+
+    def _apply():
+        v = _s(st.session_state.get(k))
+        _set_override_if_changed(field, v)
+
+    st.selectbox(
+        field,
+        options=opts,
+        key=k,
+        on_change=_apply,
+    )
+    _hint(field, ctx)
 
 
 def w_percent(field: str, ctx: Tool6Context) -> None:
@@ -379,7 +525,6 @@ def w_date(field: str, ctx: Tool6Context) -> None:
             kwargs={"field": field, "date_key": dk, "fmt_key": fk},
         )
 
-    # apply once if override missing
     overrides = st.session_state.get(SS_OVERRIDES, {}) or {}
     if field not in overrides:
         _apply_date_override(field, date_key=dk, fmt_key=fk)
@@ -433,7 +578,7 @@ def w_money(field: str, ctx: Tool6Context) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Tabs (fragmented to reduce churn)
+# Tabs
 # -----------------------------------------------------------------------------
 @st.fragment
 def _tab_project(ctx: Tool6Context) -> None:
@@ -476,7 +621,7 @@ def _tab_respondent(ctx: Tool6Context) -> None:
 
     c1, c2 = st.columns(2, gap="large")
     with c1:
-        w_select("Sex of Respondent", ctx, ["Male", "Female"], allow_empty=True)
+        w_sex("Sex of Respondent", ctx, allow_empty=True)
         w_af_phone("Contact Number of the Respondent", ctx)
     with c2:
         w_email("Email Address of the Respondent", ctx)
