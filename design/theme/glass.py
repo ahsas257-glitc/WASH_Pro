@@ -1,326 +1,238 @@
 from __future__ import annotations
 
 from pathlib import Path
-import streamlit as st
 import hashlib
+import streamlit as st
 
 
+@st.cache_data(show_spinner=False)
 def _read_text(path: str | Path) -> str:
-    """Read CSS file with caching for performance"""
+    """Read text file with caching for performance."""
     return Path(path).read_text(encoding="utf-8")
+
+
+def _inject_theme_runtime(*, theme_preference: str) -> None:
+    """
+    Apply theme preference by setting html[data-theme] to:
+      - "light"
+      - "dark"
+      - system-resolved ("light"/"dark")
+    Also removes duplicate style tags if present.
+    """
+    # IMPORTANT: Keep this JS small and robust.
+    st.markdown(
+        f"""
+<script>
+(function() {{
+  const pref = {theme_preference!r}; // "light" | "dark" | "system"
+
+  function systemTheme() {{
+    return (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches)
+      ? 'dark'
+      : 'light';
+  }}
+
+  function applyTheme() {{
+    const t = (pref === 'system') ? systemTheme() : pref;
+    document.documentElement.setAttribute('data-theme', t);
+    document.body.classList.remove('light','dark');
+    document.body.classList.add(t);
+  }}
+
+  // Remove duplicates of our style tags (if reruns injected multiple times)
+  function dedupeStyles() {{
+    const ids = ['glassmorphism-base', 'glassmorphism-overrides'];
+    ids.forEach((id) => {{
+      const nodes = document.querySelectorAll('#' + id);
+      if (nodes.length > 1) {{
+        // keep last
+        for (let i = 0; i < nodes.length - 1; i++) nodes[i].remove();
+      }}
+    }});
+  }}
+
+  applyTheme();
+  dedupeStyles();
+
+  // If system theme changes and user is on "system", update dynamically.
+  if (pref === 'system' && window.matchMedia) {{
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    try {{
+      mq.addEventListener('change', applyTheme);
+    }} catch (e) {{
+      // Safari fallback
+      mq.addListener(applyTheme);
+    }}
+  }}
+}})();
+</script>
+""",
+        unsafe_allow_html=True,
+    )
 
 
 def apply_glassmorphism(*, css_path: str | Path = "design/css/modern_glass.css") -> None:
     """
-    PURE glassmorphism theme with full UI coverage:
-      - Inputs (including password eye)
-      - Number input spinner (+/-) perfectly styled
-      - Remove grey panels behind containers/expanders
-      - Sidebar typography + button alignment
-      - Reduce top padding (move content upward)
+    Apply glassmorphism theme with:
+      - Base CSS loaded from file
+      - Minimal, theme-aware overrides (no conflicts)
+      - Real theme switching via html[data-theme]
+      - DOM dedupe for reruns
     """
 
     css_content = _read_text(css_path)
-    css_hash = hashlib.md5(css_content.encode()).hexdigest()[:8]
+    css_hash = hashlib.md5(css_content.encode("utf-8")).hexdigest()[:10]
 
+    # 1) Base CSS from file (stable id)
     st.markdown(
         f"""
-<style id="glassmorphism-theme-{css_hash}">
-/* ============================================================
-   BASE THEME (from design/css/modern_glass.css)
-   ============================================================ */
+<style id="glassmorphism-base">
+/* base-css-hash: {css_hash} */
 {css_content}
-
-/* ============================================================
-   GLOBAL LAYOUT FIX: reduce top padding (move up)
-   ============================================================ */
-.main .block-container {{
-  padding-top: 0.45rem !important;
-  padding-bottom: 1.0rem !important;
-  max-width: 100% !important;
-}}
-div[data-testid="stAppViewContainer"] > .main {{
-  padding-top: 0rem !important;
-}}
-
-/* ============================================================
-   REMOVE STREAMLIT GREY PANELS (containers/expanders/wrappers)
-   ============================================================ */
-div[data-testid="stContainer"],
-div[data-testid="stExpander"],
-div[data-testid="stVerticalBlockBorderWrapper"],
-div[data-testid="stHorizontalBlock"] {{
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}}
-div[data-testid="stContainer"] > div,
-div[data-testid="stVerticalBlockBorderWrapper"] > div {{
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}}
-details, details > summary {{
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}}
-
-/* ============================================================
-   PURE GLASS CARDS (outer only)
-   ============================================================ */
-.pure-glass-card {{
-  position: relative !important;
-  background: rgba(255, 255, 255, 0.08) !important;
-  backdrop-filter: blur(30px) saturate(200%) !important;
-  -webkit-backdrop-filter: blur(30px) saturate(200%) !important;
-  border-radius: 24px !important;
-  border: 1px solid rgba(255, 255, 255, 0.20) !important;
-  padding: 2rem !important;
-  margin: 1.2rem 0 !important;
-  box-shadow:
-    0 20px 60px rgba(0, 0, 0, 0.15),
-    inset 0 1px 0 rgba(255, 255, 255, 0.22) !important;
-  transition: all 0.28s cubic-bezier(0.4, 0, 0.2, 1) !important;
-  isolation: isolate !important;
-  overflow: visible !important;
-  z-index: 1 !important;
-}}
-.pure-glass-card:hover {{
-  transform: translateY(-3px) !important;
-  border-color: rgba(88, 153, 255, 0.28) !important;
-}}
-
-/* wrappers inside cards should not create grey layers */
-.pure-glass-card .element-container,
-.pure-glass-card .stMarkdown,
-.pure-glass-card .stDataFrame,
-.pure-glass-card .stMetric {{
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}}
-
-/* ============================================================
-   UNIVERSAL "GLASS FIELD" STYLE (inputs/selects/spinner)
-   ============================================================ */
-:root {{
-  --glass-bg: rgba(255,255,255,0.06);
-  --glass-bg-focus: rgba(255,255,255,0.09);
-  --glass-border: rgba(255,255,255,0.14);
-  --glass-border-focus: rgba(88,153,255,0.55);
-  --glass-shadow: 0 10px 28px rgba(0,0,0,0.22);
-  --glass-shadow-focus: 0 0 0 3px rgba(88,153,255,0.18), 0 14px 34px rgba(0,0,0,0.25);
-  --glass-radius: 18px;
-}}
-
-/* ============================================================
-   PERFECT INPUTS (GLOBAL) ✅
-   ============================================================ */
-div[data-baseweb="input"],
-div[data-baseweb="textarea"],
-div[data-baseweb="select"],
-div[data-baseweb="datepicker"] {{
-  border-radius: var(--glass-radius) !important;
-  overflow: hidden !important;
-  background: var(--glass-bg) !important;
-  border: 1px solid var(--glass-border) !important;
-  box-shadow: var(--glass-shadow) !important;
-  backdrop-filter: blur(14px) saturate(150%) !important;
-}}
-
-div[data-baseweb="input"] > div,
-div[data-baseweb="textarea"] > div,
-div[data-baseweb="select"] > div {{
-  border-radius: var(--glass-radius) !important;
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}}
-
-div[data-baseweb="input"] input,
-div[data-baseweb="textarea"] textarea {{
-  background: transparent !important;
-  border: none !important;
-  outline: none !important;
-  box-shadow: none !important;
-  color: rgba(255,255,255,0.92) !important;
-  font-weight: 500 !important;
-}}
-
-div[data-baseweb="input"]:focus-within,
-div[data-baseweb="textarea"]:focus-within,
-div[data-baseweb="select"]:focus-within {{
-  border-color: var(--glass-border-focus) !important;
-  box-shadow: var(--glass-shadow-focus) !important;
-  background: var(--glass-bg-focus) !important;
-}}
-
-/* password eye / enhancers */
-div[data-baseweb="input"] [data-baseweb="end-enhancer"],
-div[data-baseweb="input"] [data-baseweb="start-enhancer"] {{
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}}
-div[data-baseweb="input"] * {{
-  box-shadow: none !important;
-}}
-
-/* ============================================================
-   ✅ NUMBER INPUT SPINNER (+ / -) PERFECT STYLING
-   This is exactly what you circled.
-   ============================================================ */
-
-/* spinner outer wrapper gets the same glass look */
-div[data-baseweb="spinner"] {{
-  border-radius: var(--glass-radius) !important;
-  overflow: hidden !important;
-  background: var(--glass-bg) !important;
-  border: 1px solid var(--glass-border) !important;
-  box-shadow: var(--glass-shadow) !important;
-  backdrop-filter: blur(14px) saturate(150%) !important;
-}}
-
-/* spinner internal layout (keep transparent) */
-div[data-baseweb="spinner"] > div {{
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}}
-
-/* the input inside spinner */
-div[data-baseweb="spinner"] input {{
-  background: transparent !important;
-  border: none !important;
-  outline: none !important;
-  box-shadow: none !important;
-  color: rgba(255,255,255,0.92) !important;
-  font-weight: 600 !important;
-}}
-
-/* +/- buttons inside spinner */
-div[data-baseweb="spinner"] button {{
-  background: rgba(255,255,255,0.07) !important;
-  border: none !important;
-  box-shadow: none !important;
-  color: rgba(255,255,255,0.90) !important;
-  border-radius: 14px !important;
-  margin: 6px !important;           /* ✅ فاصله مثل کارت */
-  min-width: 44px !important;
-  min-height: 38px !important;
-  transition: all 0.18s ease !important;
-}}
-
-/* hover/focus on +/- */
-div[data-baseweb="spinner"] button:hover {{
-  background: rgba(255,255,255,0.12) !important;
-  transform: translateY(-1px) !important;
-}}
-div[data-baseweb="spinner"] button:active {{
-  transform: translateY(0px) !important;
-  background: rgba(255,255,255,0.10) !important;
-}}
-
-/* remove ugly separator/lines if any */
-div[data-baseweb="spinner"] [role="separator"],
-div[data-baseweb="spinner"] hr {{
-  display: none !important;
-}}
-
-/* focus-within for spinner container */
-div[data-baseweb="spinner"]:focus-within {{
-  border-color: var(--glass-border-focus) !important;
-  box-shadow: var(--glass-shadow-focus) !important;
-  background: var(--glass-bg-focus) !important;
-}}
-
-/* ============================================================
-   BUTTONS (global + inside cards)
-   ============================================================ */
-.stButton > button {{
-  border-radius: 12px !important;
-  font-weight: 700 !important;
-  white-space: nowrap !important;
-}}
-
-.pure-glass-card .stButton > button {{
-  background: linear-gradient(135deg, rgba(88, 153, 255, 0.90), rgba(125, 100, 255, 0.90)) !important;
-  border: none !important;
-  color: #fff !important;
-  padding: 0.70rem 1.4rem !important;
-  box-shadow: 0 6px 22px rgba(88, 153, 255, 0.28) !important;
-}}
-.pure-glass-card .stButton > button:hover {{
-  transform: translateY(-1px) !important;
-  box-shadow: 0 10px 30px rgba(88, 153, 255, 0.38) !important;
-}}
-
-/* ============================================================
-   ALERTS (avoid heavy blocks)
-   ============================================================ */
-div[data-testid="stAlert"] {{
-  background: rgba(255,255,255,0.06) !important;
-  border: 1px solid rgba(255,255,255,0.10) !important;
-  box-shadow: none !important;
-}}
-
-/* ============================================================
-   SIDEBAR TYPOGRAPHY + SPACING
-   ============================================================ */
-section[data-testid="stSidebar"] {{
-  backdrop-filter: blur(18px) saturate(140%) !important;
-}}
-section[data-testid="stSidebar"] * {{
-  font-size: 12.5px !important;
-  line-height: 1.25 !important;
-}}
-section[data-testid="stSidebar"] h1,
-section[data-testid="stSidebar"] h2,
-section[data-testid="stSidebar"] h3 {{
-  font-size: 14px !important;
-  margin: 0.35rem 0 0.55rem 0 !important;
-  font-weight: 750 !important;
-}}
-section[data-testid="stSidebar"] label {{
-  font-size: 12px !important;
-  opacity: 0.85 !important;
-}}
-section[data-testid="stSidebar"] div[data-baseweb="input"],
-section[data-testid="stSidebar"] div[data-baseweb="textarea"],
-section[data-testid="stSidebar"] div[data-baseweb="select"],
-section[data-testid="stSidebar"] div[data-baseweb="spinner"] {{
-  margin: 0.30rem 0 !important;
-}}
-section[data-testid="stSidebar"] .stButton > button {{
-  width: 100% !important;
-  min-height: 2.35rem !important;
-  border-radius: 12px !important;
-  padding: 0.45rem 0.90rem !important;
-  font-weight: 800 !important;
-}}
-section[data-testid="stSidebar"] div[data-testid="column"] {{
-  padding-top: 0 !important;
-  padding-bottom: 0 !important;
-}}
-
-/* ============================================================
-   LIGHT/DARK ADAPTATIONS
-   ============================================================ */
-[data-theme="light"] .pure-glass-card {{
-  background: rgba(255, 255, 255, 0.12) !important;
-  border-color: rgba(0, 0, 0, 0.08) !important;
-}}
-[data-theme="dark"] .pure-glass-card {{
-  background: rgba(30, 30, 46, 0.10) !important;
-  border-color: rgba(255, 255, 255, 0.12) !important;
-}}
 </style>
 """,
         unsafe_allow_html=True,
     )
 
-    # Meta tags
+    # 2) Overrides: keep small + theme-aware, avoid hard-coded white text
+    st.markdown(
+        """
+<style id="glassmorphism-overrides">
+/* ============================================================
+   Overrides (minimal + robust)
+   ============================================================ */
+
+/* Reduce top spacing */
+.main .block-container{
+  padding-top: 0.55rem !important;
+  padding-bottom: 1.0rem !important;
+  max-width: 100% !important;
+}
+div[data-testid="stAppViewContainer"] > .main{
+  padding-top: 0rem !important;
+}
+
+/* Consistent vertical rhythm */
+div[data-testid="stVerticalBlock"]{
+  gap: 0.70rem !important;
+}
+
+/* Columns: stretch children -> cards align nicely */
+div[data-testid="stHorizontalBlock"]{ align-items: stretch !important; }
+div[data-testid="column"]{
+  display: flex !important;
+  flex-direction: column !important;
+  align-self: stretch !important;
+}
+div[data-testid="column"] > div{ width: 100% !important; }
+
+/* Remove Streamlit default “grey panels” behind wrappers */
+div[data-testid="stContainer"],
+div[data-testid="stVerticalBlockBorderWrapper"],
+div[data-testid="stHorizontalBlock"]{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+div[data-testid="stContainer"] > div,
+div[data-testid="stVerticalBlockBorderWrapper"] > div{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Expander -> look like a card (instead of transparent details) */
+div[data-testid="stExpander"]{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+div[data-testid="stExpander"] > details{
+  background: var(--glass-secondary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-light) !important;
+  overflow: hidden !important;
+}
+div[data-testid="stExpander"] > details > summary{
+  padding: 0.85rem 1rem !important;
+  color: var(--text-primary) !important;
+}
+div[data-testid="stExpander"] > details[open]{
+  box-shadow: var(--shadow-medium) !important;
+}
+
+/* PURE glass card: use theme tokens (avoid fixed rgba that breaks light) */
+.pure-glass-card{
+  position: relative !important;
+  background: var(--glass-secondary) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-medium) !important;
+  backdrop-filter: blur(var(--blur-medium)) saturate(1.25) !important;
+  -webkit-backdrop-filter: blur(var(--blur-medium)) saturate(1.25) !important;
+  padding: 1.6rem !important;
+  margin: 1.0rem 0 !important;
+  transition: all var(--transition-medium) !important;
+  isolation: isolate !important;
+  z-index: 1 !important;
+}
+.pure-glass-card:hover{
+  transform: translateY(-2px) !important;
+  border-color: var(--border-strong) !important;
+  box-shadow: var(--shadow-heavy), var(--shadow-glow) !important;
+}
+
+/* Inside cards: prevent nested wrappers from reintroducing backgrounds */
+.pure-glass-card .element-container,
+.pure-glass-card .stMarkdown,
+.pure-glass-card .stDataFrame,
+.pure-glass-card .stMetric{
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+}
+
+/* Inputs: do NOT hardcode white text (use theme tokens) */
+div[data-baseweb="input"] input,
+div[data-baseweb="textarea"] textarea,
+div[data-baseweb="select"] span{
+  color: var(--text-primary) !important;
+}
+
+/* Placeholder */
+div[data-baseweb="input"] input::placeholder,
+div[data-baseweb="textarea"] textarea::placeholder{
+  color: var(--text-tertiary) !important;
+  opacity: 0.85 !important;
+}
+
+/* Spinner buttons: remove margins that split the box */
+div[data-baseweb="spinner"] button{
+  margin: 0 !important;
+}
+
+/* Alerts: lighter */
+div[data-testid="stAlert"]{
+  background: var(--glass-tertiary) !important;
+  border: 1px solid var(--border) !important;
+  box-shadow: none !important;
+}
+
+/* Sidebar: keep it consistent with base tokens (no hard overrides) */
+section[data-testid="stSidebar"] .stButton > button{
+  width: 100% !important;
+  min-height: 2.35rem !important;
+  border-radius: 12px !important;
+  padding: 0.45rem 0.90rem !important;
+  font-weight: 800 !important;
+}
+</style>
+""",
+        unsafe_allow_html=True,
+    )
+
+    # 3) Meta tags (safe)
     st.markdown(
         """
 <meta name="theme-color" content="#0A0F1A">
@@ -331,8 +243,15 @@ section[data-testid="stSidebar"] div[data-testid="column"] {{
         unsafe_allow_html=True,
     )
 
+    # 4) Apply theme preference to html[data-theme] (REAL switching)
+    theme_preference = get_theme_preference()
+    _inject_theme_runtime(theme_preference=theme_preference)
+
 
 def apply_minimal_theme() -> None:
+    """
+    Minimal theme (fallback / debug).
+    """
     minimal_css = """
 :root {
   --radius-md: 12px;
@@ -357,13 +276,14 @@ html[data-theme="dark"] .pure-glass-card {
 
 
 def get_theme_preference() -> str:
+    # "system" is default
     return st.session_state.get("theme_preference", "system")
 
 
 def set_theme_preference(theme: str) -> None:
-    valid_themes = ["light", "dark", "system"]
-    if theme not in valid_themes:
-        raise ValueError(f"Theme must be one of {valid_themes}")
+    valid = {"light", "dark", "system"}
+    if theme not in valid:
+        raise ValueError(f"Theme must be one of {sorted(valid)}")
     st.session_state.theme_preference = theme
     st.rerun()
 
@@ -372,17 +292,17 @@ def theme_selector_widget() -> None:
     with st.sidebar:
         st.markdown("### 🎨 Theme")
 
-        current_theme = get_theme_preference()
+        current = get_theme_preference()
         col1, col2, col3 = st.columns(3)
 
         with col1:
-            if st.button("☀️", use_container_width=True, help="Light Theme", disabled=current_theme == "light"):
+            if st.button("☀️", use_container_width=True, help="Light Theme", disabled=current == "light"):
                 set_theme_preference("light")
 
         with col2:
-            if st.button("🌙", use_container_width=True, help="Dark Theme", disabled=current_theme == "dark"):
+            if st.button("🌙", use_container_width=True, help="Dark Theme", disabled=current == "dark"):
                 set_theme_preference("dark")
 
         with col3:
-            if st.button("⚙️", use_container_width=True, help="System Default", disabled=current_theme == "system"):
+            if st.button("⚙️", use_container_width=True, help="System Default", disabled=current == "system"):
                 set_theme_preference("system")
