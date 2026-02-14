@@ -239,7 +239,7 @@ with mid:
             # wrapper فقط برای اینکه CSS فقط همین دکمه را بزند
             st.markdown('<div class="refresh-wrap">', unsafe_allow_html=True)
             st.button(
-                "Refresh",
+                "Ref",
                 key="refresh_btn",
                 on_click=_refresh_tpm_list,
                 use_container_width=True,
