@@ -249,7 +249,7 @@ with mid:
     if load_error:
         st.error(load_error)
     else:
-        st.caption(f"Auto-update: every ~{TPM_CACHE_TTL_SEC}s (cache TTL).")
+        st.caption(f"")
 
 
 # Continue button
