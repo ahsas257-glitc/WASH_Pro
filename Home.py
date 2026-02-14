@@ -19,6 +19,22 @@ st.set_page_config(page_title="WASH Pro — Home", layout="wide")
 
 # ✅ Apply global design from design/
 apply_glassmorphism()
+# -------------------------
+# Custom style for Refresh button
+# -------------------------
+st.markdown(
+    """
+    <style>
+    /* فقط دکمه‌های داخل ستون کوچک (Refresh) */
+    div[data-testid="column"] button {
+        min-height: 42px !important;
+        padding: 6px 10px !important;
+        font-size: 14px !important;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 # -------------------------
