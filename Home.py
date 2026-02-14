@@ -1,3 +1,4 @@
+# Home.py (اصلاح‌شده) — منطق اصلی حفظ شده، فقط: (1) آپدیت سریع‌تر، (2) Auto-refresh اختیاری، (3) Refresh دستی، (4) Clear cache روی تغییر Tool
 from __future__ import annotations
 
 import re
@@ -18,6 +19,21 @@ st.set_page_config(page_title="WASH Pro — Home", layout="wide")
 
 # ✅ Apply global design from design/
 apply_glassmorphism()
+
+
+# -------------------------
+# OPTIONAL: Auto-refresh (بدون تغییر منطق اصلی)
+# اگر پکیج streamlit-autorefresh نصب باشد، هر چند ثانیه یک‌بار rerun می‌کند تا دیتای جدید سریع بیاید.
+# نصب (در صورت نیاز): pip install streamlit-autorefresh
+# -------------------------
+AUTO_REFRESH_MS = 3000  # هر 3 ثانیه
+try:
+    from streamlit_autorefresh import st_autorefresh
+
+    st_autorefresh(interval=AUTO_REFRESH_MS, key="tpm_poll")
+except Exception:
+    # اگر نصب نبود، اپ همچنان کار می‌کند؛ فقط realtime اتومات ندارد و با تعامل/Refresh دستی آپدیت می‌شود.
+    pass
 
 
 # -------------------------
@@ -58,9 +74,11 @@ def _secrets_hint_if_missing_or_blank() -> str | None:
 
 
 # -------------------------
-# Cached loader (logic unchanged)
+# Cached loader (منطق حفظ شده؛ فقط TTL کم شده تا سریع آپدیت شود)
 # -------------------------
-@st.cache_data(ttl=600, show_spinner=False)
+TPM_CACHE_TTL_SEC = 3  # ✅ قبلا 600 بود؛ الان برای آپدیت سریع‌تر
+
+@st.cache_data(ttl=TPM_CACHE_TTL_SEC, show_spinner=False)
 def load_tpm_ids_cached(sheet_id: str, tool_name: str, tpm_col: str) -> list[str]:
     return fetch_tpm_ids(sheet_id, tool_name, tpm_col=tpm_col, header_row=1)
 
@@ -136,7 +154,16 @@ def _resolve_tool_page_file(selected_tool: str) -> str | None:
 # UI (Grid-like, no CSS here)
 # -------------------------
 def _on_tool_change() -> None:
+    # منطق شما: reset tpm_id
     st.session_state["tpm_id"] = ""
+    # ✅ اضافه شده: برای اینکه بعد از تغییر tool، حتما لیست جدید فوراً از شیت خوانده شود
+    load_tpm_ids_cached.clear()
+
+
+def _refresh_tpm_list() -> None:
+    # ✅ دکمه Refresh دستی (بدون دست زدن به منطق اصلی)
+    load_tpm_ids_cached.clear()
+    st.rerun()
 
 
 # --- Header (همچنان ساده و بدون CSS) ---
@@ -163,6 +190,13 @@ with mid:
             on_change=_on_tool_change,
         )
 
+    # Row 2: TPM ID + Refresh
+    # ✅ ردیف را کمی تغییر دادیم تا کنار TPM ID یک دکمه Refresh داشته باشید (منطق انتخاب همان است)
+    l2, r2 = st.columns([0.33, 0.67], vertical_alignment="center")
+    with l2:
+        st.markdown("**TPM ID**")
+
+    # ✅ ابتدا لیست را لود می‌کنیم
     with st.spinner("Loading TPM list..."):
         tpm_ids, load_error = _safe_load_tpm_ids(selected_tool)
 
@@ -170,26 +204,26 @@ with mid:
     if st.session_state["tpm_id"] not in options:
         st.session_state["tpm_id"] = ""
 
-    # Row 2: TPM ID
-    l2, r2 = st.columns([0.33, 0.67], vertical_alignment="center")
-    with l2:
-        st.markdown("**TPM ID**")
     with r2:
-        selected_tpm_id = st.selectbox(
-            "TPM ID",
-            options=options,
-            key="tpm_id",
-            label_visibility="collapsed",
-        )
+        sel_col, btn_col = st.columns([0.78, 0.22], vertical_alignment="center")
+        with sel_col:
+            selected_tpm_id = st.selectbox(
+                "TPM ID",
+                options=options,
+                key="tpm_id",
+                label_visibility="collapsed",
+            )
+        with btn_col:
+            st.button("Refresh", on_click=_refresh_tpm_list, use_container_width=True)
 
     # Tip / Error (داخل همان بخش وسط، زیر گرید)
     if load_error:
         st.error(load_error)
     else:
-        st.caption("Tip: choose TPM ID first, then continue.")
+        st.caption(f"Auto-update: every ~{TPM_CACHE_TTL_SEC}s (cache TTL).")
+
 
 # ====== BUTTON (خارج از گرید، وسط صفحه، کوچک) ======
-# یک ردیف جدا برای دکمه، اما همچنان وسط صفحه
 _, btn_mid, _ = st.columns([1, 0.35, 1], vertical_alignment="center")
 
 login_disabled = (not st.session_state["tpm_id"]) or bool(load_error)
@@ -199,9 +233,8 @@ with btn_mid:
         "Continue",
         type="primary",
         disabled=login_disabled,
-        use_container_width=True,  # چون ستونش باریکه، دکمه کوچک دیده میشه
+        use_container_width=True,
     )
-
 
 
 # -------------------------
