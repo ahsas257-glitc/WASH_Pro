@@ -230,7 +230,13 @@ with mid:
                 label_visibility="collapsed",
             )
         with btn_col:
-            st.button("Refresh", on_click=_refresh_tpm_list, use_container_width=True)
+    st.button(
+        "Refresh",
+        key="refresh_btn",
+        on_click=_refresh_tpm_list,
+        use_container_width=True
+    )
+
 
     # Tip / Error (داخل همان بخش وسط، زیر گرید)
     if load_error:
