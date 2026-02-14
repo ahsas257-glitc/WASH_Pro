@@ -1,4 +1,4 @@
-# Home.py (اصلاح‌شده) — منطق اصلی حفظ شده، فقط: (1) آپدیت سریع‌تر، (2) Auto-refresh اختیاری، (3) Refresh دستی، (4) Clear cache روی تغییر Tool
+# Home.py (اصلاح‌شده کامل) — منطق اصلی حفظ شده
 from __future__ import annotations
 
 import re
@@ -7,7 +7,7 @@ from pathlib import Path
 import streamlit as st
 from gspread.exceptions import WorksheetNotFound, SpreadsheetNotFound, APIError
 
-from design import apply_glassmorphism  # ✅ design comes from design/ folder
+from design import apply_glassmorphism
 from src.config import GOOGLE_SHEET_ID, TPM_COL, TOOLS
 from src.data_processing import fetch_tpm_ids
 
@@ -17,38 +17,46 @@ from src.data_processing import fetch_tpm_ids
 # -------------------------
 st.set_page_config(page_title="WASH Pro — Home", layout="wide")
 
-# ✅ Apply global design from design/
+# ✅ Apply global design
 apply_glassmorphism()
+
 # -------------------------
-# Custom style for Refresh button
+# Custom style (ONLY Refresh button)
 # -------------------------
 st.markdown(
     """
     <style>
-    /* فقط دکمه‌های داخل ستون کوچک (Refresh) */
-    div[data-testid="column"] button {
-        min-height: 42px !important;
-        padding: 6px 10px !important;
+    /* فقط دکمه Refresh که داخل wrapper مخصوص قرار می‌گیرد */
+    .refresh-wrap div[data-testid="stButton"] > button {
+        height: 44px !important;
+        min-height: 44px !important;
+        padding: 0 14px !important;
         font-size: 14px !important;
+        line-height: 44px !important;   /* متن دقیقاً وسط */
+        border-radius: 12px !important; /* هماهنگ با UI */
+        width: 100% !important;
+        display: inline-flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+    }
+
+    /* بعضی نسخه‌ها متن داخل span می‌نشیند؛ این هم کمک می‌کند */
+    .refresh-wrap div[data-testid="stButton"] > button * {
+        line-height: 44px !important;
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-
 # -------------------------
-# OPTIONAL: Auto-refresh (بدون تغییر منطق اصلی)
-# اگر پکیج streamlit-autorefresh نصب باشد، هر چند ثانیه یک‌بار rerun می‌کند تا دیتای جدید سریع بیاید.
-# نصب (در صورت نیاز): pip install streamlit-autorefresh
+# OPTIONAL: Auto-refresh
 # -------------------------
 AUTO_REFRESH_MS = 3000  # هر 3 ثانیه
 try:
     from streamlit_autorefresh import st_autorefresh
-
     st_autorefresh(interval=AUTO_REFRESH_MS, key="tpm_poll")
 except Exception:
-    # اگر نصب نبود، اپ همچنان کار می‌کند؛ فقط realtime اتومات ندارد و با تعامل/Refresh دستی آپدیت می‌شود.
     pass
 
 
@@ -90,9 +98,9 @@ def _secrets_hint_if_missing_or_blank() -> str | None:
 
 
 # -------------------------
-# Cached loader (منطق حفظ شده؛ فقط TTL کم شده تا سریع آپدیت شود)
+# Cached loader (TTL کم برای آپدیت سریع)
 # -------------------------
-TPM_CACHE_TTL_SEC = 3  # ✅ قبلا 600 بود؛ الان برای آپدیت سریع‌تر
+TPM_CACHE_TTL_SEC = 3  # قبلا 600 بود
 
 @st.cache_data(ttl=TPM_CACHE_TTL_SEC, show_spinner=False)
 def load_tpm_ids_cached(sheet_id: str, tool_name: str, tpm_col: str) -> list[str]:
@@ -167,31 +175,28 @@ def _resolve_tool_page_file(selected_tool: str) -> str | None:
 
 
 # -------------------------
-# UI (Grid-like, no CSS here)
+# UI helpers
 # -------------------------
 def _on_tool_change() -> None:
-    # منطق شما: reset tpm_id
     st.session_state["tpm_id"] = ""
-    # ✅ اضافه شده: برای اینکه بعد از تغییر tool، حتما لیست جدید فوراً از شیت خوانده شود
     load_tpm_ids_cached.clear()
 
 
 def _refresh_tpm_list() -> None:
-    # ✅ دکمه Refresh دستی (بدون دست زدن به منطق اصلی)
     load_tpm_ids_cached.clear()
     st.rerun()
 
 
-# --- Header (همچنان ساده و بدون CSS) ---
+# -------------------------
+# UI
+# -------------------------
 st.markdown("## WASH Pro")
 st.markdown("Select a tool and TPM ID to continue.")
 st.caption("WASH • UNICEF")
 
-# --- Center the whole content ---
 _, mid, _ = st.columns([1, 1.2, 1], vertical_alignment="center")
 
 with mid:
-    # ====== GRID (داخل ستون وسط) ======
     # Row 1: Tool
     l1, r1 = st.columns([0.33, 0.67], vertical_alignment="center")
     with l1:
@@ -206,13 +211,7 @@ with mid:
             on_change=_on_tool_change,
         )
 
-    # Row 2: TPM ID + Refresh
-    # ✅ ردیف را کمی تغییر دادیم تا کنار TPM ID یک دکمه Refresh داشته باشید (منطق انتخاب همان است)
-    l2, r2 = st.columns([0.33, 0.67], vertical_alignment="center")
-    with l2:
-        st.markdown("**TPM ID**")
-
-    # ✅ ابتدا لیست را لود می‌کنیم
+    # Load TPM list
     with st.spinner("Loading TPM list..."):
         tpm_ids, load_error = _safe_load_tpm_ids(selected_tool)
 
@@ -220,8 +219,14 @@ with mid:
     if st.session_state["tpm_id"] not in options:
         st.session_state["tpm_id"] = ""
 
+    # Row 2: TPM ID + Refresh
+    l2, r2 = st.columns([0.33, 0.67], vertical_alignment="center")
+    with l2:
+        st.markdown("**TPM ID**")
+
     with r2:
         sel_col, btn_col = st.columns([0.78, 0.22], vertical_alignment="center")
+
         with sel_col:
             selected_tpm_id = st.selectbox(
                 "TPM ID",
@@ -229,25 +234,26 @@ with mid:
                 key="tpm_id",
                 label_visibility="collapsed",
             )
+
         with btn_col:
-    st.button(
-        "Refresh",
-        key="refresh_btn",
-        on_click=_refresh_tpm_list,
-        use_container_width=True
-    )
+            # wrapper فقط برای اینکه CSS فقط همین دکمه را بزند
+            st.markdown('<div class="refresh-wrap">', unsafe_allow_html=True)
+            st.button(
+                "Refresh",
+                key="refresh_btn",
+                on_click=_refresh_tpm_list,
+                use_container_width=True,
+            )
+            st.markdown("</div>", unsafe_allow_html=True)
 
-
-    # Tip / Error (داخل همان بخش وسط، زیر گرید)
     if load_error:
         st.error(load_error)
     else:
         st.caption(f"Auto-update: every ~{TPM_CACHE_TTL_SEC}s (cache TTL).")
 
 
-# ====== BUTTON (خارج از گرید، وسط صفحه، کوچک) ======
+# Continue button
 _, btn_mid, _ = st.columns([1, 0.35, 1], vertical_alignment="center")
-
 login_disabled = (not st.session_state["tpm_id"]) or bool(load_error)
 
 with btn_mid:
